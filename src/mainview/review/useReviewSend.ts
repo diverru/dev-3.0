@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { buildReviewPrompt, type ReviewComment } from "../../shared/review";
 import { api } from "../rpc";
 import { toast } from "../toast";
@@ -56,5 +56,43 @@ export function useReviewSend(taskId: string, projectId: string | undefined, rev
 		sendComments(comments, () => setBatchSending(false));
 	}, [batchSending, sendComments]);
 
-	return { sendComments, sendOne, sendAll, sendingCommentIds, batchSending };
+	const replyingIds = useRef(new Set<string>());
+
+	/**
+	 * Answers the agent inside a thread: the whole thread goes to the agent first,
+	 * and the reply is stored only once delivery is not refused — a failed send
+	 * keeps the draft and leaves no reply the agent never saw. Never resolves,
+	 * never touches `sentAt`. Resolves to whether the text left dev3.
+	 */
+	const sendReply = useCallback(async (comment: ReviewComment, body: string): Promise<boolean> => {
+		const trimmed = body.trim();
+		if (!projectId || !trimmed || replyingIds.current.has(comment.id)) return false;
+		replyingIds.current.add(comment.id);
+		try {
+			const text = buildReviewPrompt([{
+				id: comment.id,
+				anchor: comment.anchor,
+				comment: comment.body,
+				origin: "local",
+				author: null,
+				replies: [...(comment.replies ?? []), { author: "user", body: trimmed }],
+			}]);
+			let spilledPath: string | null = null;
+			try {
+				spilledPath = (await api.request.sendAgentMessageNow({ taskId, projectId, text }))?.spilledPath ?? null;
+			} catch (err) {
+				toast.error(t("infoPanel.diffReviewReplyFailed", { error: String(err) }), { taskId });
+				return false;
+			}
+			await review.reply(comment.id, trimmed);
+			toast.success(spilledPath
+				? t("infoPanel.diffReviewSendCommentSuccessFile", { path: spilledPath })
+				: t("infoPanel.diffReviewReplySent"), { taskId });
+			return true;
+		} finally {
+			replyingIds.current.delete(comment.id);
+		}
+	}, [projectId, review, t, taskId]);
+
+	return { sendComments, sendOne, sendAll, sendReply, sendingCommentIds, batchSending };
 }

@@ -127,6 +127,10 @@ export function ReviewAside({
 									if (target) send.sendOne(target);
 								}}
 								onReopenComment={review.reopen}
+								onReplyComment={(id, body) => {
+									const target = comments.find((item) => item.id === id);
+									return target ? send.sendReply(target, body) : Promise.resolve(false);
+								}}
 								sendingCommentIds={send.sendingCommentIds}
 							/>
 						</div>

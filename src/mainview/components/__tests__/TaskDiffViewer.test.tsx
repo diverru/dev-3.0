@@ -19,6 +19,7 @@ vi.mock("../../rpc", () => ({
 			markReviewCommentsSent: vi.fn().mockResolvedValue(undefined),
 			resolveReviewComment: vi.fn().mockResolvedValue(undefined),
 			reopenReviewComment: vi.fn().mockResolvedValue(undefined),
+			replyReviewComment: vi.fn().mockResolvedValue(undefined),
 			clearTaskReview: vi.fn().mockResolvedValue(undefined),
 			importReviewComments: vi.fn().mockResolvedValue(undefined),
 		},
@@ -2487,6 +2488,114 @@ describe("TaskDiffViewer", () => {
 		expect(api.request.reopenReviewComment).toHaveBeenCalledWith({ taskId: "t1", projectId: "p1", commentId: "done" });
 		await waitFor(() => {
 			expect(screen.getByTestId("inline-comment-send")).toBeInTheDocument();
+		});
+	});
+
+	describe("answering the agent inside a thread", () => {
+		const awaitingTask = (overrides: Partial<NonNullable<Task["review"]>[number]> = {}): Task => ({
+			...task,
+			review: [{
+				id: "ask",
+				body: "Is get_redis_connection dead?",
+				createdAt: "2026-10-16T09:00:00.000Z",
+				sentAt: "2026-10-16T09:01:00.000Z",
+				replies: [{ id: "r1", author: "agent", body: "Agreed. Details in chat, waiting for OK.", createdAt: "2026-10-16T09:05:00.000Z" }],
+				anchor: { kind: "diff-line", fileId: "src/app.ts", filePath: "src/app.ts", side: "newFile", startLine: 1, endLine: 1 },
+				...overrides,
+			}],
+		});
+		const renderViewer = (stored: Task) => render(
+			<I18nProvider>
+				<TaskDiffViewer
+					task={stored}
+					project={project}
+					request={{ mode: "branch", compareRef: "origin/main", compareLabel: "origin/main" }}
+					onBack={vi.fn()}
+				/>
+			</I18nProvider>,
+		);
+
+		it("sends the whole thread to this task's agent, then stores the reply — without resolving or re-marking", async () => {
+			const user = userEvent.setup();
+			let release: (value: { spilledPath: null }) => void = () => {};
+			vi.mocked(api.request.sendAgentMessageNow).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }) as never);
+			renderViewer(awaitingTask());
+			await screen.findAllByTestId("mock-diff");
+
+			await user.type(screen.getByRole("textbox", { name: "Reply to the agent…" }), "ok, go");
+			await user.click(screen.getByTestId("inline-comment-reply-send"));
+			await user.click(screen.getByTestId("inline-comment-reply-send"));
+			expect(api.request.sendAgentMessageNow).toHaveBeenCalledTimes(1);
+			expect(api.request.replyReviewComment).not.toHaveBeenCalled();
+
+			const { text, taskId, projectId } = vi.mocked(api.request.sendAgentMessageNow).mock.calls[0][0];
+			expect({ taskId, projectId }).toEqual({ taskId: "t1", projectId: "p1" });
+			expect(text).toContain('<review id="ask">');
+			expect(text).toContain('<file src="src/app.ts" line=1>');
+			expect(text).toContain("<comment>Is get_redis_connection dead?</comment>");
+			expect(text).toContain('<reply author="agent">Agreed. Details in chat, waiting for OK.</reply>');
+			expect(text).toContain('<reply author="user">ok, go</reply>');
+
+			await act(async () => release({ spilledPath: null }));
+			await waitFor(() => {
+				expect(api.request.replyReviewComment).toHaveBeenCalledWith({ taskId: "t1", projectId: "p1", commentId: "ask", body: "ok, go", author: "user" });
+			});
+			expect(api.request.resolveReviewComment).not.toHaveBeenCalled();
+			expect(api.request.markReviewCommentsSent).not.toHaveBeenCalled();
+			// The user now has the last word: the field stays, offering an addition instead of a reply.
+			await waitFor(() => {
+				expect(screen.getByRole("textbox", { name: "Add to this comment…" })).toHaveValue("");
+			});
+			expect(screen.getByTestId("inline-comment-reply-send")).toHaveTextContent("Add");
+			expect(screen.getAllByTestId("inline-comment-reply")[1]).toHaveTextContent("ok, go");
+		});
+
+		it("keeps the draft and stores nothing when delivery is refused", async () => {
+			const user = userEvent.setup();
+			vi.mocked(api.request.sendAgentMessageNow).mockRejectedValueOnce(new Error("no live agent"));
+			renderViewer(awaitingTask());
+			await screen.findAllByTestId("mock-diff");
+
+			const field = screen.getByRole("textbox", { name: "Reply to the agent…" });
+			await user.type(field, "ok");
+			await user.click(screen.getByTestId("inline-comment-reply-send"));
+			await waitFor(() => {
+				expect(api.request.sendAgentMessageNow).toHaveBeenCalledTimes(1);
+			});
+			await waitFor(() => {
+				expect(field).not.toBeDisabled();
+			});
+			expect(field).toHaveValue("ok");
+			expect(api.request.replyReviewComment).not.toHaveBeenCalled();
+		});
+
+		it("lets the user add to a sent comment the agent has not answered yet", async () => {
+			const user = userEvent.setup();
+			vi.mocked(api.request.sendAgentMessageNow).mockResolvedValueOnce({ spilledPath: null } as never);
+			renderViewer(awaitingTask({ replies: undefined }));
+			await screen.findAllByTestId("mock-diff");
+
+			await user.type(screen.getByRole("textbox", { name: "Add to this comment…" }), "also rename it");
+			await user.click(screen.getByTestId("inline-comment-reply-send"));
+			await waitFor(() => {
+				expect(api.request.replyReviewComment).toHaveBeenCalledWith({ taskId: "t1", projectId: "p1", commentId: "ask", body: "also rename it", author: "user" });
+			});
+			const { text } = vi.mocked(api.request.sendAgentMessageNow).mock.calls[0][0];
+			expect(text).toContain("<comment>Is get_redis_connection dead?</comment>");
+			expect(text).toContain('<reply author="user">also rename it</reply>');
+			expect(api.request.markReviewCommentsSent).not.toHaveBeenCalled();
+		});
+
+		it("offers no field on a resolved thread or on a comment the agent never received", async () => {
+			const { unmount } = renderViewer(awaitingTask({ resolvedAt: "2026-10-16T09:06:00.000Z", resolvedBy: "agent" }));
+			await screen.findAllByTestId("mock-diff");
+			expect(screen.queryByTestId("inline-comment-reply-form")).not.toBeInTheDocument();
+			unmount();
+
+			renderViewer(awaitingTask({ sentAt: undefined, replies: undefined }));
+			await screen.findAllByTestId("mock-diff");
+			expect(screen.getByTestId("inline-comment-send")).toBeInTheDocument();
+			expect(screen.queryByTestId("inline-comment-reply-form")).not.toBeInTheDocument();
 		});
 	});
 

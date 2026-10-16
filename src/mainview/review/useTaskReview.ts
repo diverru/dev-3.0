@@ -5,6 +5,7 @@ import {
 	deleteReviewComment,
 	markReviewCommentsSent,
 	reopenReviewComment,
+	replyToReviewComment,
 	resolveReviewComment,
 	updateReviewCommentBody,
 	type ReviewComment,
@@ -29,6 +30,8 @@ export interface TaskReviewApi {
 	markSent(commentIds: Iterable<string>): ReviewMutation;
 	resolve(commentId: string, by: ReviewReplyAuthor, reply?: string): ReviewMutation;
 	reopen(commentId: string): ReviewMutation;
+	/** Stores the user's answer under the comment; it never resolves or reopens the thread. */
+	reply(commentId: string, body: string): ReviewMutation;
 	clear(): ReviewMutation;
 	/** One-shot import of comments a browser still held in localStorage. */
 	importMany(comments: ReviewComment[]): ReviewMutation;
@@ -90,6 +93,11 @@ export function useTaskReview(task: Pick<Task, "id" | "review">, projectId: stri
 		return run(api.request.reopenReviewComment({ taskId, projectId, commentId }));
 	}, [projectId, run, taskId]);
 
+	const reply = useCallback((commentId: string, body: string) => {
+		setComments((current) => replyToReviewComment(current, commentId, { body, author: "user" }));
+		return run(api.request.replyReviewComment({ taskId, projectId, commentId, body, author: "user" }));
+	}, [projectId, run, taskId]);
+
 	const clear = useCallback(() => {
 		setComments([]);
 		return run(api.request.clearTaskReview({ taskId, projectId }));
@@ -104,5 +112,5 @@ export function useTaskReview(task: Pick<Task, "id" | "review">, projectId: stri
 		return run(api.request.importReviewComments({ taskId, projectId, comments: imported }));
 	}, [projectId, run, taskId]);
 
-	return { comments, add, update, remove, markSent, resolve, reopen, clear, importMany };
+	return { comments, add, update, remove, markSent, resolve, reopen, reply, clear, importMany };
 }

@@ -29,6 +29,7 @@ import { extractReviewSnippet, getReviewFilePath, parseDiffHunkLines, type DiffS
 import { buildReviewPrompt, describeReviewAnchor, type ReviewAnchor, type ReviewComment, type ReviewDiffLineAnchor, type ReviewPromptEntry } from "../../shared/review";
 import { ReviewComposer } from "../review/ReviewComposer";
 import { ReviewThreadView } from "../review/ReviewThreadView";
+import { useReviewSend } from "../review/useReviewSend";
 import { useTaskReview } from "../review/useTaskReview";
 import { dropLegacyReview, pruneLegacyReviews, readLegacyReview } from "../review/legacy-storage";
 import { PrConversationBlock } from "./pr-review/PrConversationBlock";
@@ -251,6 +252,7 @@ interface TaskDiffFileSectionProps {
 	onSaveEditComment: (commentId: string, body: string) => void;
 	onDeleteComment: (commentId: string) => void;
 	onReopenComment: (commentId: string) => void;
+	onReplyComment: (commentId: string, body: string) => Promise<boolean>;
 	onSendComment: (commentId: string) => void;
 	sendingCommentIds: Record<string, boolean>;
 	onToggleExpanded: () => void;
@@ -725,6 +727,7 @@ function MarkdownPreviewReview({
 	onSaveEditComment,
 	onDeleteComment,
 	onReopenComment,
+	onReplyComment,
 	onSendComment,
 	sendingCommentIds,
 	registerCommentRef,
@@ -745,6 +748,7 @@ function MarkdownPreviewReview({
 	onSaveEditComment: (commentId: string, body: string) => void;
 	onDeleteComment: (commentId: string) => void;
 	onReopenComment: (commentId: string) => void;
+	onReplyComment: (commentId: string, body: string) => Promise<boolean>;
 	onSendComment: (commentId: string) => void;
 	sendingCommentIds: Record<string, boolean>;
 	registerCommentRef: (commentId: string, element: HTMLDivElement | null) => void;
@@ -926,6 +930,7 @@ function MarkdownPreviewReview({
 								onSaveEdit={onSaveEditComment}
 								onDeleteComment={onDeleteComment}
 								onReopenComment={onReopenComment}
+								onReplyComment={onReplyComment}
 								onSendComment={onSendComment}
 								sendingCommentIds={sendingCommentIds}
 							/>
@@ -1231,6 +1236,7 @@ function TaskDiffFileSection({
 	onSaveEditComment,
 	onDeleteComment,
 	onReopenComment,
+	onReplyComment,
 	onSendComment,
 	sendingCommentIds,
 	onToggleExpanded,
@@ -1745,6 +1751,7 @@ function TaskDiffFileSection({
 						onSaveEditComment={onSaveEditComment}
 						onDeleteComment={onDeleteComment}
 						onReopenComment={onReopenComment}
+						onReplyComment={onReplyComment}
 						onSendComment={onSendComment}
 						sendingCommentIds={sendingCommentIds}
 						registerCommentRef={registerCommentRef}
@@ -1824,6 +1831,7 @@ function TaskDiffFileSection({
 										onSaveEdit={onSaveEditComment}
 										onDeleteComment={onDeleteComment}
 										onReopenComment={onReopenComment}
+										onReplyComment={onReplyComment}
 										onSendComment={onSendComment}
 										sendingCommentIds={sendingCommentIds}
 									/>
@@ -1893,6 +1901,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 	// The review lives on the task record and is shared with the artifact viewer
 	// and the agent's CLI; this viewer only projects it onto the widget map.
 	const review = useTaskReview(task, project.id);
+	const { sendReply } = useReviewSend(task.id, project.id, review);
 	const inlineComments = useMemo(() => buildInlineCommentsState(review.comments), [review.comments]);
 	const importLegacyReview = review.importMany;
 	const [copiedReviewXml, setCopiedReviewXml] = useState(false);
@@ -2474,6 +2483,11 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 				setThreadSendStates((current) => ({ ...current, [thread.id]: undefined }));
 				toast.error(t("infoPanel.prSendToAgentFailed", { error: String(err) }), { taskId: task.id });
 			});
+	}
+
+	function replyToInlineComment(commentId: string, body: string): Promise<boolean> {
+		const comment = review.comments.find((item) => item.id === commentId);
+		return comment ? sendReply(comment, body) : Promise.resolve(false);
 	}
 
 	function sendInlineCommentToAgent(commentId: string) {
@@ -4072,6 +4086,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 								onSaveEditComment={updateInlineComment}
 								onDeleteComment={deleteInlineComment}
 								onReopenComment={reopenInlineComment}
+								onReplyComment={replyToInlineComment}
 								onSendComment={sendInlineCommentToAgent}
 								sendingCommentIds={sendingCommentIds}
 								onToggleExpanded={() => toggleFileExpanded(file.id)}

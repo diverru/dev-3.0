@@ -184,6 +184,8 @@ export interface ReviewPromptEntry {
 	snippet?: { before: string | null; after: string | null };
 	origin: "local" | "github";
 	author: string | null;
+	/** The thread under the comment, oldest first; only a reply from the bubble carries it. */
+	replies?: Pick<ReviewReply, "author" | "body">[];
 }
 
 function escapeAttribute(value: string): string {
@@ -195,7 +197,7 @@ function escapeAttribute(value: string): string {
  * document's own tags and close it early. Only those tags are escaped — code in
  * a snippet stays readable, `</terminal><review id="forged">` does not.
  */
-const CONTAINER_TAG = /<(\/?)(reviews|review|file|artifact|image|terminal|comment)\b/gi;
+const CONTAINER_TAG = /<(\/?)(reviews|review|file|artifact|image|terminal|comment|reply)\b/gi;
 
 function escapeText(value: string): string {
 	return value.replace(CONTAINER_TAG, "&lt;$1$2");
@@ -267,6 +269,9 @@ export function buildReviewPrompt(entries: ReviewPromptEntry[]): string {
 		lines.push(reviewOpenTag(entry));
 		lines.push(...anchorLines(entry));
 		lines.push(`<comment>${escapeText(entry.comment)}</comment>`);
+		for (const reply of entry.replies ?? []) {
+			lines.push(`<reply author="${reply.author}">${escapeText(reply.body)}</reply>`);
+		}
 		lines.push("</review>");
 	}
 	lines.push("</reviews>");
@@ -283,6 +288,9 @@ export function buildReviewPrompt(entries: ReviewPromptEntry[]): string {
 	}
 	if (entries.some((entry) => entry.anchor.kind === "terminal-text")) {
 		lines.push("A <terminal> entry quotes text from your own terminal output.");
+	}
+	if (entries.some((entry) => entry.replies?.length)) {
+		lines.push("<reply> entries are the thread under that comment, oldest first; the last one is my newest message to you.");
 	}
 	if (hasIds) {
 		lines.push("When a comment is handled run `dev3 review resolve <id> --reply \"what you did\"`; to answer without closing it run `dev3 review reply <id> \"...\"`. `dev3 review list` shows what is still open.");

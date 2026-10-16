@@ -18,6 +18,8 @@ export interface ReviewThreadViewProps {
 	/** Clears the resolved mark the agent set; replaces `Send` on a resolved bubble so the budget stays at three. */
 	onReopenComment?: (commentId: string) => void;
 	sendingCommentIds: Record<string, boolean>;
+	/** Answers the agent in the thread; resolves to whether it was sent, so the draft survives a failure. */
+	onReplyComment?: (commentId: string, body: string) => Promise<boolean>;
 }
 
 const SECONDARY_BUTTON = "dev3-inline-comment__button dev3-inline-comment__button--secondary inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-micro font-semibold transition-colors";
@@ -39,6 +41,7 @@ export function ReviewThreadView({
 	onSendComment,
 	onReopenComment,
 	sendingCommentIds,
+	onReplyComment,
 }: ReviewThreadViewProps) {
 	const t = useT();
 	const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -182,11 +185,76 @@ export function ReviewThreadView({
 										{reply.body}
 									</div>
 								))}
+								{onReplyComment && !resolved && Boolean(comment.sentAt || comment.replies?.length) && (
+									<ReviewReplyField
+										mode={comment.replies?.[comment.replies.length - 1]?.author === "agent" ? "reply" : "addition"}
+										onSubmit={(body) => onReplyComment(comment.id, body)}
+									/>
+								)}
 							</div>
 						)}
 					</div>
 				);
 			})}
 		</div>
+	);
+}
+
+/**
+ * On every open thread the agent already received: `reply` when the agent has
+ * the last word, `addition` otherwise. An unsent comment is edited instead.
+ * Not a bubble action: the three-action budget stays intact.
+ */
+function ReviewReplyField({ mode, onSubmit }: { mode: "reply" | "addition"; onSubmit: (body: string) => Promise<boolean> }) {
+	const t = useT();
+	const [value, setValue] = useState("");
+	const [sending, setSending] = useState(false);
+	const trimmed = value.trim();
+	const placeholder = mode === "reply" ? t("infoPanel.diffReviewReplyPlaceholder") : t("infoPanel.diffReviewAdditionPlaceholder");
+
+	const submit = () => {
+		if (!trimmed || sending) return;
+		setSending(true);
+		onSubmit(trimmed)
+			.then((sent) => { if (sent) setValue(""); })
+			.finally(() => setSending(false));
+	};
+
+	return (
+		<form
+			data-testid="inline-comment-reply-form"
+			className="flex items-end gap-2"
+			onSubmit={(event) => {
+				event.preventDefault();
+				submit();
+			}}
+		>
+			<textarea
+				value={value}
+				onChange={(event) => setValue(event.target.value)}
+				onKeyDown={(event) => {
+					if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+						event.preventDefault();
+						submit();
+					}
+				}}
+				rows={1}
+				disabled={sending}
+				aria-label={placeholder}
+				placeholder={placeholder}
+				className="dev3-inline-comment__textarea min-w-0 flex-1 resize-y rounded-md border border-edge bg-base px-2.5 py-1.5 text-sm text-fg outline-none transition-colors placeholder:text-fg-muted focus:border-edge-active focus:bg-elevated disabled:opacity-60"
+			/>
+			<button
+				type="submit"
+				disabled={!trimmed || sending}
+				data-testid="inline-comment-reply-send"
+				className={`${SECONDARY_BUTTON} shrink-0 border-edge bg-base text-fg-2 hover:bg-elevated-hover disabled:cursor-not-allowed disabled:text-fg-muted`}
+			>
+				<span aria-hidden="true" className="text-sm-plus leading-none" style={{ fontFamily: ICON }}>{"\uf1d8"}</span>
+				<span>{sending
+					? t("infoPanel.diffReviewSendCommentSending")
+					: mode === "reply" ? t("infoPanel.diffReviewReply") : t("infoPanel.diffReviewAddition")}</span>
+			</button>
+		</form>
 	);
 }

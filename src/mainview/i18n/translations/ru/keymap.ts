@@ -49,6 +49,7 @@ const keymap = {
 	"keymap.shortcut.terminalFullscreen": "Переключить иммерсивный fullscreen терминала (только в терминале задачи)",
 	"keymap.shortcut.artifactSearch": "Поиск в открытом HTML-артефакте",
 	"keymap.shortcut.filePreviewSearch": "Поиск в открытом предпросмотре файла",
+	"keymap.shortcut.reviewCommentSend": "Отправить комментарий из ревью агенту",
 	"keymap.shortcut.toggleProjectTerminal": "Переключить репо (терминал и файлы проекта)",
 	"keymap.shortcut.openQuickShell": "Открыть быструю консоль",
 	"keymap.shortcut.terminalSearch": "Поиск в активном терминале (история tmux)",

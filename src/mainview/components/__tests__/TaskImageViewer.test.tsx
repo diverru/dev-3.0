@@ -338,6 +338,31 @@ describe("TaskImageViewer comment mode", () => {
 		expect(screen.getByTestId("image-review-thread")).toHaveTextContent("Toolbar overlaps here");
 	});
 
+	it("sends a region comment to the agent on the send shortcut", async () => {
+		const user = userEvent.setup();
+		renderCommentable({ id: "t1" });
+		await screen.findByTestId("viewer-main-image");
+		stubLayout();
+		await user.click(screen.getByTestId("image-viewer-comment"));
+
+		const overlay = await screen.findByTestId("image-review-overlay");
+		overlay.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 300, right: 400, bottom: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+		overlay.setPointerCapture = () => {};
+		fireEvent.pointerDown(overlay, { button: 0, clientX: 100, clientY: 60, pointerId: 1 });
+		fireEvent.pointerMove(overlay, { clientX: 300, clientY: 150, pointerId: 1 });
+		fireEvent.pointerUp(overlay, { clientX: 300, clientY: 150, pointerId: 1 });
+
+		await screen.findByTestId("image-review-composer");
+		await user.type(screen.getByPlaceholderText("Leave a comment on this line..."), "Toolbar overlaps here");
+		// isMac() is false in the test environment, so the combo is Ctrl+Enter.
+		await user.keyboard("{Control>}{Enter}{/Control}");
+
+		await waitFor(() => expect(reviewApi().sendAgentMessageNow).toHaveBeenCalledTimes(1));
+		const { text } = reviewApi().sendAgentMessageNow.mock.calls[0][0] as { text: string };
+		expect(text).toContain("<comment>Toolbar overlaps here</comment>");
+		await waitFor(() => expect(reviewApi().markReviewCommentsSent).toHaveBeenCalledTimes(1));
+	});
+
 	it("draws regions from the task record even with comment mode off, and a click without a drag becomes a small box", async () => {
 		const user = userEvent.setup();
 		renderCommentable({

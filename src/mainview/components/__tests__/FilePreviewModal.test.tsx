@@ -455,6 +455,28 @@ describe("FilePreviewModal review comments", () => {
 		expect(screen.getByText("one").parentElement).not.toHaveAttribute("data-commented");
 	});
 
+	it("sends a selection comment to the agent on the send shortcut", async () => {
+		const user = userEvent.setup();
+		render(
+			<I18nProvider>
+				<FilePreviewModal path="/wt/src/a.ts" taskId="t1" projectId="p1" task={{ id: "t1" }} onClose={vi.fn()} />
+			</I18nProvider>,
+		);
+		await waitFor(() => expect(screen.getByTestId("file-preview-code")).toHaveAttribute("data-syntax", "true"));
+
+		selectLines(screen.getByText("two"), screen.getByText("three"), "two\nthree");
+		fireEvent.mouseUp(screen.getByText("two").closest("[data-preview-line]")!.parentElement!.parentElement as HTMLElement);
+		await user.click(await screen.findByTestId("file-preview-comment-selection"));
+		await screen.findByTestId("file-review-composer");
+		await user.type(screen.getByPlaceholderText("Leave a comment on this line..."), "Rename these");
+		await user.keyboard("{Control>}{Enter}{/Control}");
+
+		await waitFor(() => expect(reviewApi().sendAgentMessageNow).toHaveBeenCalledTimes(1));
+		const { text } = reviewApi().sendAgentMessageNow.mock.calls[0][0] as { text: string };
+		expect(text).toContain("<comment>Rename these</comment>");
+		await waitFor(() => expect(reviewApi().markReviewCommentsSent).toHaveBeenCalledTimes(1));
+	});
+
 	it("shows no selection button without a project", async () => {
 		render(<I18nProvider><FilePreviewModal path="/wt/src/a.ts" taskId="t1" onClose={vi.fn()} /></I18nProvider>);
 		await waitFor(() => expect(screen.getByText("two")).toBeInTheDocument());

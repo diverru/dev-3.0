@@ -1925,6 +1925,37 @@ describe("TaskDiffViewer", () => {
 		expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
 	});
 
+	it("sends a comment from the line composer on the send shortcut", async () => {
+		const user = userEvent.setup();
+		vi.mocked(api.request.sendAgentMessageNow).mockResolvedValue(undefined as never);
+
+		render(
+			<I18nProvider>
+				<TaskDiffViewer
+					task={task}
+					project={project}
+					request={{ mode: "branch", compareRef: "origin/main", compareLabel: "origin/main" }}
+					onBack={vi.fn()}
+				/>
+			</I18nProvider>,
+		);
+
+		await screen.findAllByTestId("mock-diff");
+		const appSection = document.querySelector('[data-file-id="src/app.ts"]') as HTMLElement;
+		await user.click(within(appSection).getByRole("button", { name: "Open inline comment composer" }));
+		await user.type(screen.getByPlaceholderText("Leave a comment on this line..."), "Rename this callback.");
+		// isMac() is false in the test environment, so the combo is Ctrl+Enter.
+		await user.keyboard("{Control>}{Enter}{/Control}");
+
+		await waitFor(() => {
+			expect(api.request.sendAgentMessageNow).toHaveBeenCalledTimes(1);
+		});
+		expect(vi.mocked(api.request.sendAgentMessageNow).mock.calls[0][0].text).toContain("<comment>Rename this callback.</comment>");
+		await waitFor(() => {
+			expect(screen.getByTestId("review-export-sent-marker")).toBeInTheDocument();
+		});
+	});
+
 	it("sends one inline comment on its own and keeps it out of the batch payload", async () => {
 		const user = userEvent.setup();
 		const writeText = vi.fn().mockResolvedValue(undefined);
@@ -3768,6 +3799,25 @@ describe("TaskDiffViewer — GitHub PR review layer", () => {
 			expect(list.textContent).toContain("1 comment on this file");
 			// And the block itself is marked, so the comment is visible in place.
 			expect(blockByText(preview, "bold").className).toContain("dev3-md-commented");
+		});
+
+		it("sends a preview comment on the send shortcut", async () => {
+			const user = userEvent.setup();
+			vi.mocked(api.request.getTaskDiff).mockResolvedValue(markdownFilePayload({}));
+			vi.mocked(api.request.sendAgentMessageNow).mockResolvedValue(undefined as never);
+			renderViewer();
+
+			const preview = await screen.findByTestId("diff-md-preview");
+			selectBlock(blockByText(preview, "bold"));
+			await user.click(within(preview).getByTestId("md-preview-add-comment"));
+			await user.type(screen.getByPlaceholderText("Leave a comment on this line..."), "tighten this");
+			await user.keyboard("{Control>}{Enter}{/Control}");
+
+			await waitFor(() => {
+				expect(api.request.sendAgentMessageNow).toHaveBeenCalledTimes(1);
+			});
+			expect(vi.mocked(api.request.sendAgentMessageNow).mock.calls[0][0].text).toContain("<comment>tighten this</comment>");
+			expect((await screen.findByTestId("md-preview-comments")).textContent).toContain("tighten this");
 		});
 
 		it("comments the old side when the selection sits in a removed block", async () => {

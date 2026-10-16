@@ -230,7 +230,7 @@ const infoPanel = {
 	"infoPanel.diffCommentCancel": "Cancel",
 	"infoPanel.diffCommentSubmit": "Add comment",
 	"infoPanel.diffCommentSubmitSend": "Send now",
-	"infoPanel.diffCommentSubmitSendTooltip": "Send this comment to the agent right away — it stays in the review, marked as sent.",
+	"infoPanel.diffCommentSubmitSendTooltip": "Send this comment to the agent right away — it stays in the review, marked as sent. ({keys})",
 	"infoPanel.diffCommentLine": "{side} line {line}",
 	"infoPanel.diffCommentLines": "{side} lines {start}–{end}",
 	"infoPanel.diffCommentSideOld": "Old",

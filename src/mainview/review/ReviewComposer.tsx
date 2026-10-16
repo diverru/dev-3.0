@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useT } from "../i18n";
+import { matchesShortcut, shortcutById, shortcutKeysFor } from "../keymap";
 
 const ICON = "'JetBrainsMono Nerd Font Mono'";
 
@@ -20,6 +21,13 @@ export function ReviewComposer({ anchorLabel, onCancel, onSubmit, onSubmitAndSen
 	const t = useT();
 	const [value, setValue] = useState("");
 	const trimmedValue = value.trim();
+	const sendKeys = shortcutKeysFor(shortcutById("review-comment-send")!);
+
+	const sendNow = () => {
+		if (!trimmedValue) return;
+		onSubmitAndSend(trimmedValue);
+		setValue("");
+	};
 
 	return (
 		<form
@@ -40,6 +48,11 @@ export function ReviewComposer({ anchorLabel, onCancel, onSubmit, onSubmitAndSen
 			<textarea
 				value={value}
 				onChange={(event) => setValue(event.target.value)}
+				onKeyDown={(event) => {
+					if (!matchesShortcut(event.nativeEvent, "review-comment-send")) return;
+					event.preventDefault();
+					sendNow();
+				}}
 				placeholder={t("infoPanel.diffCommentPlaceholder")}
 				rows={3}
 				autoFocus
@@ -55,14 +68,10 @@ export function ReviewComposer({ anchorLabel, onCancel, onSubmit, onSubmitAndSen
 				</button>
 				<button
 					type="button"
-					onClick={() => {
-						if (!trimmedValue) return;
-						onSubmitAndSend(trimmedValue);
-						setValue("");
-					}}
+					onClick={sendNow}
 					disabled={!trimmedValue}
 					data-testid="inline-comment-composer-send"
-					title={t("infoPanel.diffCommentSubmitSendTooltip")}
+					title={t("infoPanel.diffCommentSubmitSendTooltip", { keys: sendKeys })}
 					className="dev3-inline-comment__button dev3-inline-comment__button--secondary inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-edge bg-base px-3 text-xs font-semibold text-fg-2 transition-colors hover:bg-elevated-hover disabled:cursor-not-allowed disabled:text-fg-muted"
 				>
 					<span aria-hidden="true" className="text-sm-plus leading-none" style={{ fontFamily: ICON }}>{""}</span>

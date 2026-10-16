@@ -52,6 +52,7 @@ const keymap = {
 	"keymap.shortcut.terminalFullscreen": "Toggle terminal immersive fullscreen (task terminal only)",
 	"keymap.shortcut.artifactSearch": "Find in the focused HTML artifact",
 	"keymap.shortcut.filePreviewSearch": "Find in the open file preview",
+	"keymap.shortcut.reviewCommentSend": "Send the review comment to the agent",
 	"keymap.shortcut.toggleProjectTerminal": "Toggle Repo (project terminal and files)",
 	"keymap.shortcut.openQuickShell": "Open Quick Shell",
 	"keymap.shortcut.terminalSearch": "Search in the focused terminal (tmux scrollback)",

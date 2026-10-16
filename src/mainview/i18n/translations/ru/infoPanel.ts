@@ -254,7 +254,7 @@ const infoPanel = {
 	"infoPanel.diffCommentCancel": "Отмена",
 	"infoPanel.diffCommentSubmit": "Добавить комментарий",
 	"infoPanel.diffCommentSubmitSend": "Отправить сразу",
-	"infoPanel.diffCommentSubmitSendTooltip": "Отправить комментарий агенту сразу — он останется в ревью с пометкой «отправлено».",
+	"infoPanel.diffCommentSubmitSendTooltip": "Отправить комментарий агенту сразу — он останется в ревью с пометкой «отправлено». ({keys})",
 	"infoPanel.diffCommentLine": "{side} строка {line}",
 	"infoPanel.diffCommentLines": "{side} строки {start}–{end}",
 	"infoPanel.diffCommentSideOld": "Старая",

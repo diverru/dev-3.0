@@ -53,7 +53,7 @@ export type ShortcutScope = "both" | "desktop" | "remote";
  * a combo because only one of them can be focused at a time — ⌘F is the terminal
  * search inside a terminal and the artifact search inside an artifact.
  */
-export type ShortcutConflictGroup = "app" | "terminal" | "artifact" | "file-preview";
+export type ShortcutConflictGroup = "app" | "terminal" | "artifact" | "file-preview" | "review-composer";
 
 export interface ShortcutSpec {
 	/** Stable, unique id. Also the persistence key for a user override. */
@@ -228,6 +228,8 @@ export const APP_SHORTCUTS: ShortcutSpec[] = [
 	// Shares ⌘F with the artifact search on purpose: its own group, because the two
 	// are modal overlays and only the open one is ever listening.
 	{ id: "file-preview-search", primary: [mod("KeyF")], descKey: "keymap.shortcut.filePreviewSearch", category: "view", conflictGroup: "file-preview" },
+	// Only the focused review composer listens, so it cannot shadow an app combo.
+	{ id: "review-comment-send", primary: [mod("Enter")], descKey: "keymap.shortcut.reviewCommentSend", category: "create", conflictGroup: "review-composer" },
 
 	// ── Terminal ──
 	{ id: "toggle-project-terminal", primary: [mod("Backquote")], descKey: "keymap.shortcut.toggleProjectTerminal", category: "terminal" },

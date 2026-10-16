@@ -768,6 +768,20 @@ describe("TaskArtifactViewer comment mode", () => {
 		));
 	});
 
+	it("sends a picked comment to the agent on the send shortcut", async () => {
+		const { frame } = await openViewer({ id: "task-7" });
+		await userEvent.click(screen.getByTestId("artifact-viewer-comment"));
+		fromFrame(frame, { type: "dev3-artifact-comment-pick", pick: { selector: ".kpi", text: "Agent success 94.2%", heading: "Overview" } });
+		await screen.findByTestId("artifact-review-composer");
+		await userEvent.type(screen.getByPlaceholderText("Leave a comment on this line..."), "Wrong number");
+		await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+
+		await waitFor(() => expect(reviewApi().sendAgentMessageNow).toHaveBeenCalledTimes(1));
+		const { text } = reviewApi().sendAgentMessageNow.mock.calls[0][0] as { text: string };
+		expect(text).toContain("<comment>Wrong number</comment>");
+		await waitFor(() => expect(reviewApi().markReviewCommentsSent).toHaveBeenCalledTimes(1));
+	});
+
 	it("draws pins from the task record, marks the ones the frame cannot place, and sends unsent comments as one prompt", async () => {
 		const review = [
 			{ id: "a1", body: "Wrong number", createdAt: "2026-09-15T10:00:00.000Z", anchor: { kind: "artifact-element", artifactId: "v", version: 9, title: "Artifact v", selector: ".kpi", text: "94.2%", heading: "Overview" } },

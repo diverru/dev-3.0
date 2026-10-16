@@ -49,6 +49,7 @@ const keymap = {
 	"keymap.shortcut.terminalFullscreen": "Alternar pantalla inmersiva del terminal (solo en terminal de tarea)",
 	"keymap.shortcut.artifactSearch": "Buscar en el artefacto HTML abierto",
 	"keymap.shortcut.filePreviewSearch": "Buscar en la vista previa del archivo",
+	"keymap.shortcut.reviewCommentSend": "Enviar el comentario de review al agente",
 	"keymap.shortcut.toggleProjectTerminal": "Alternar repo (terminal y archivos del proyecto)",
 	"keymap.shortcut.openQuickShell": "Abrir Shell rápido",
 	"keymap.shortcut.terminalSearch": "Buscar en el terminal activo (historial de tmux)",

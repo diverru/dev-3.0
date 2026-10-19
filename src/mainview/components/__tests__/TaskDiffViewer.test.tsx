@@ -1596,12 +1596,11 @@ describe("TaskDiffViewer", () => {
 
 		const targetSection = document.querySelector('[data-file-id="zzz/readme.md"]') as HTMLDivElement | null;
 		expect(targetSection).not.toBeNull();
-		let targetRectCall = 0;
 		Object.defineProperty(targetSection as HTMLDivElement, "getBoundingClientRect", {
 			configurable: true,
 			value: () => {
-				targetRectCall += 1;
-				const top = targetRectCall === 1 ? 840 : targetRectCall === 2 ? 260 : 192;
+				const scrolls = scrollToMock.mock.calls.length;
+				const top = scrolls === 0 ? 840 : scrolls === 1 ? 260 : 192;
 				return {
 					top,
 					bottom: top + 200,

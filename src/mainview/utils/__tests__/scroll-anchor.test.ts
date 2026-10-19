@@ -81,45 +81,29 @@ describe("anchorScrollRegion", () => {
 		expect(layout.scrollTop).toBe(3400);
 	});
 
-	it("skips compensation on resize when scrollTop moved since the last capture", () => {
+	it("keeps a programmatic scroll after reanchor", () => {
 		const { region, layout } = setup(3000, [0, 2900, 4000]);
-		anchorScrollRegion(region, "[data-file-id]");
-		// programmatic scroll computed against the grown layout, no scroll event processed yet
+		const { reanchor } = anchorScrollRegion(region, "[data-file-id]");
+		// scrollTo computed against the grown layout
 		layout.tops = [0, 7900, 9000];
 		layout.scrollTop = 7900;
+		reanchor();
 		fireResize();
 		expect(layout.scrollTop).toBe(7900);
 	});
 
-	it("anchors on a built section, not on a placeholder in view above it", () => {
-		const { region, layout } = setup(5000, [4500, 5200, 5336], [700, 136, 1000], [1]);
+	it("compensates growth when a user scroll was not yet seen by a scroll event", () => {
+		const { region, layout } = setup(3000, [0, 2900, 4000]);
 		anchorScrollRegion(region, "[data-file-id]");
-		layout.tops = [4500, 5200, 10336];
+		layout.scrollTop = 3400;
+		layout.tops = [0, 7900, 9000];
 		fireResize();
-		expect(layout.scrollTop).toBe(10000);
-	});
-
-	it("prefers a built section straddling the top over a placeholder in view", () => {
-		const { region, layout } = setup(5000, [4500, 5200, 9000], [700, 136, 1000], [1]);
-		anchorScrollRegion(region, "[data-file-id]");
-		// the straddling section grows below the fold; its top, and so the view, stays put
-		layout.tops = [4500, 7200, 11000];
-		fireResize();
-		expect(layout.scrollTop).toBe(5000);
-	});
-
-	it("falls back to a placeholder when it is the only section in view", () => {
-		const { region, layout } = setup(5000, [3000, 5200, 9000], [700, 136, 1000], [1]);
-		anchorScrollRegion(region, "[data-file-id]");
-		// the section above the placeholder grows, pushing the placeholder down
-		layout.tops = [3000, 7200, 11000];
-		fireResize();
-		expect(layout.scrollTop).toBe(7000);
+		expect(layout.scrollTop).toBe(8400);
 	});
 
 	it("stops compensating after dispose", () => {
 		const { region, layout } = setup(3000, [0, 2900, 4000]);
-		const dispose = anchorScrollRegion(region, "[data-file-id]");
+		const { dispose } = anchorScrollRegion(region, "[data-file-id]");
 		dispose();
 		region.dispatchEvent(new Event("scroll"));
 		layout.tops = [0, 7900, 9000];

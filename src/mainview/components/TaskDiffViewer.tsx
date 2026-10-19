@@ -1870,6 +1870,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 	const resolvedTheme = useResolvedTheme();
 	const toolbarRef = useRef<HTMLDivElement | null>(null);
 	const scrollRegionRef = useRef<HTMLDivElement | null>(null);
+	const scrollAnchorRef = useRef<ReturnType<typeof anchorScrollRegion> | null>(null);
 	const searchInputRef = useRef<HTMLInputElement | null>(null);
 	const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
 	const fileButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -2326,7 +2327,10 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 
 	useEffect(() => {
 		const region = scrollRegionRef.current;
-		return region ? anchorScrollRegion(region, "[data-file-id]") : undefined;
+		if (!region) return;
+		const handle = anchorScrollRegion(region, "[data-file-id]");
+		scrollAnchorRef.current = handle;
+		return () => handle.dispose();
 	}, []);
 
 	// Scroll spy: as the user scrolls the diff, highlight the file whose section is currently
@@ -2716,6 +2720,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 			top: Math.max(0, scrollRegion.scrollTop + offset),
 			behavior,
 		});
+		scrollAnchorRef.current?.reanchor();
 
 		if (retriesLeft <= 0) {
 			pendingScrollFrameRef.current = null;
@@ -2759,6 +2764,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 						behavior: "smooth",
 						block: "start",
 					});
+					scrollAnchorRef.current?.reanchor();
 					pendingCommentScrollFrameRef.current = null;
 					return;
 				}
@@ -2815,6 +2821,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 					behavior: "smooth",
 					block: "center",
 				});
+				scrollAnchorRef.current?.reanchor();
 				pendingSearchScrollFrameRef.current = null;
 				return;
 			}

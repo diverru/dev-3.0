@@ -1,0 +1,130 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { anchorScrollRegion } from "../scroll-anchor";
+
+let fireResize: () => void;
+
+class FakeResizeObserver {
+	constructor(cb: () => void) {
+		fireResize = () => { if (this.live) cb(); };
+	}
+	private live = true;
+	observe() {}
+	unobserve() {}
+	disconnect() { this.live = false; }
+}
+
+function rect(top: number, height: number): DOMRect {
+	return { top, bottom: top + height, height } as DOMRect;
+}
+
+// Region sits at viewport y=0 and is 500px tall; `layout.tops` places each file section in content space.
+function setup(scrollTop: number, tops: number[], heights: number[] = [], pending: number[] = []) {
+	const region = document.createElement("div");
+	const layout = { scrollTop, tops };
+	Object.defineProperty(region, "clientHeight", { value: 500 });
+	Object.defineProperty(region, "scrollTop", {
+		get: () => layout.scrollTop,
+		set: (v: number) => { layout.scrollTop = v; },
+	});
+	region.getBoundingClientRect = () => rect(0, 500);
+	tops.forEach((_, i) => {
+		const el = document.createElement("div");
+		el.dataset.fileId = String(i);
+		if (pending.includes(i)) el.setAttribute("data-scroll-anchor-pending", "");
+		el.getBoundingClientRect = () => rect(layout.tops[i] - layout.scrollTop, heights[i] ?? 1000);
+		region.appendChild(el);
+	});
+	document.body.appendChild(region);
+	return { region, layout };
+}
+
+describe("anchorScrollRegion", () => {
+	beforeEach(() => {
+		vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		document.body.innerHTML = "";
+	});
+
+	it("keeps the anchor in place when a section above it grows", () => {
+		const { region, layout } = setup(3000, [0, 2900, 4000]);
+		anchorScrollRegion(region, "[data-file-id]");
+		// section 1 straddles the top; section 0 above it grows by 5000
+		layout.tops = [0, 7900, 9000];
+		fireResize();
+		expect(layout.scrollTop).toBe(8000);
+	});
+
+	it("does not compensate when scrollTop was 0", () => {
+		const { region, layout } = setup(0, [0, 1000]);
+		anchorScrollRegion(region, "[data-file-id]");
+		layout.tops = [0, 6000];
+		fireResize();
+		expect(layout.scrollTop).toBe(0);
+	});
+
+	it("leaves scrollTop alone when growth is below the anchor", () => {
+		const { region, layout } = setup(3000, [0, 2900, 4000]);
+		anchorScrollRegion(region, "[data-file-id]");
+		layout.tops = [0, 2900, 9000];
+		fireResize();
+		expect(layout.scrollTop).toBe(3000);
+	});
+
+	it("does not treat a user scroll as drift", () => {
+		const { region, layout } = setup(3000, [0, 2900, 4000]);
+		anchorScrollRegion(region, "[data-file-id]");
+		layout.scrollTop = 3400;
+		fireResize();
+		expect(layout.scrollTop).toBe(3400);
+	});
+
+	it("skips compensation on resize when scrollTop moved since the last capture", () => {
+		const { region, layout } = setup(3000, [0, 2900, 4000]);
+		anchorScrollRegion(region, "[data-file-id]");
+		// programmatic scroll computed against the grown layout, no scroll event processed yet
+		layout.tops = [0, 7900, 9000];
+		layout.scrollTop = 7900;
+		fireResize();
+		expect(layout.scrollTop).toBe(7900);
+	});
+
+	it("anchors on a built section, not on a placeholder in view above it", () => {
+		const { region, layout } = setup(5000, [4500, 5200, 5336], [700, 136, 1000], [1]);
+		anchorScrollRegion(region, "[data-file-id]");
+		layout.tops = [4500, 5200, 10336];
+		fireResize();
+		expect(layout.scrollTop).toBe(10000);
+	});
+
+	it("prefers a built section straddling the top over a placeholder in view", () => {
+		const { region, layout } = setup(5000, [4500, 5200, 9000], [700, 136, 1000], [1]);
+		anchorScrollRegion(region, "[data-file-id]");
+		// the straddling section grows below the fold; its top, and so the view, stays put
+		layout.tops = [4500, 7200, 11000];
+		fireResize();
+		expect(layout.scrollTop).toBe(5000);
+	});
+
+	it("falls back to a placeholder when it is the only section in view", () => {
+		const { region, layout } = setup(5000, [3000, 5200, 9000], [700, 136, 1000], [1]);
+		anchorScrollRegion(region, "[data-file-id]");
+		// the section above the placeholder grows, pushing the placeholder down
+		layout.tops = [3000, 7200, 11000];
+		fireResize();
+		expect(layout.scrollTop).toBe(7000);
+	});
+
+	it("stops compensating after dispose", () => {
+		const { region, layout } = setup(3000, [0, 2900, 4000]);
+		const dispose = anchorScrollRegion(region, "[data-file-id]");
+		dispose();
+		region.dispatchEvent(new Event("scroll"));
+		layout.tops = [0, 7900, 9000];
+		fireResize();
+		region.dispatchEvent(new Event("scroll"));
+		expect(layout.scrollTop).toBe(3000);
+	});
+});

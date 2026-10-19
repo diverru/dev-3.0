@@ -3981,5 +3981,122 @@ describe("TaskDiffViewer — GitHub PR review layer", () => {
 			expect(screen.getAllByTestId("mock-diff").length).toBeGreaterThan(0);
 			expect(screen.getByRole("button", { name: /toggle markdown preview/i })).toHaveAttribute("aria-pressed", "false");
 		});
+
+		describe("remembered choice", () => {
+			function twoMarkdownFiles(): TaskDiffResponse {
+				const base = markdownFilePayload({});
+				const guide = base.files[0];
+				const other = { ...guide, id: "docs/other.md", displayPath: "docs/other.md", oldPath: "docs/other.md", newPath: "docs/other.md" };
+				return { ...base, summary: { files: 2, insertions: 6, deletions: 2 }, files: [guide, other] };
+			}
+
+			const toggleFor = (path: string) => screen.getByRole("button", { name: new RegExp(`toggle markdown preview for ${path.replace(/\./g, "\\.")}`, "i") });
+
+			async function renderTwo() {
+				vi.mocked(api.request.getTaskDiff).mockResolvedValue(twoMarkdownFiles());
+				const view = renderViewer();
+				await screen.findByRole("button", { name: /toggle markdown preview for docs\/other\.md/i });
+				return view;
+			}
+
+			it("reopens a file in source mode after the user switched its preview off", async () => {
+				const user = userEvent.setup();
+				const first = await renderTwo();
+				await user.click(toggleFor("docs/guide.md"));
+				first.unmount();
+
+				await renderTwo();
+				expect(toggleFor("docs/guide.md")).toHaveAttribute("aria-pressed", "false");
+			});
+
+			it("applies the last choice to other markdown files on the next open, not live", async () => {
+				const user = userEvent.setup();
+				const first = await renderTwo();
+				await user.click(toggleFor("docs/guide.md"));
+				expect(toggleFor("docs/other.md")).toHaveAttribute("aria-pressed", "true");
+				first.unmount();
+
+				await renderTwo();
+				expect(toggleFor("docs/other.md")).toHaveAttribute("aria-pressed", "false");
+			});
+
+			it("lets an explicit per-file choice win over the last choice", async () => {
+				const user = userEvent.setup();
+				const first = await renderTwo();
+				await user.click(toggleFor("docs/guide.md"));
+				await user.click(toggleFor("docs/other.md"));
+				await user.click(toggleFor("docs/other.md"));
+				first.unmount();
+
+				await renderTwo();
+				expect(toggleFor("docs/guide.md")).toHaveAttribute("aria-pressed", "false");
+				expect(toggleFor("docs/other.md")).toHaveAttribute("aria-pressed", "true");
+			});
+
+			it("does not persist the flip a search hit makes", async () => {
+				const user = userEvent.setup();
+				vi.mocked(api.request.getTaskDiff).mockResolvedValue(markdownFilePayload({
+					newContent: "# Title\n\nfindme unique\n",
+					hunks: ["diff --git a/docs/guide.md b/docs/guide.md\n@@ -1 +1,3 @@\n-# Old\n+# Title\n+\n+findme unique\n"],
+				}));
+				const first = renderViewer();
+				await screen.findByTestId("diff-md-preview");
+				await user.keyboard("{Meta>}f{/Meta}");
+				await user.type(screen.getByPlaceholderText("Search diff..."), "findme");
+				await waitFor(() => expect(screen.queryByTestId("diff-md-preview")).toBeNull());
+				first.unmount();
+
+				renderViewer();
+				expect(await screen.findByTestId("diff-md-preview")).toBeInTheDocument();
+			});
+
+			it("falls back to preview when the stored value is garbage", async () => {
+				localStorage.setItem("dev3-inline-diff-md-preview-v1", JSON.stringify({ last: "no", files: { "task-1:docs/guide.md": 3 } }));
+				vi.mocked(api.request.getTaskDiff).mockResolvedValue(markdownFilePayload({}));
+				renderViewer();
+				expect(await screen.findByTestId("diff-md-preview")).toBeInTheDocument();
+			});
+
+			it("falls back to preview when the stored value is not JSON", async () => {
+				localStorage.setItem("dev3-inline-diff-md-preview-v1", "{not json");
+				vi.mocked(api.request.getTaskDiff).mockResolvedValue(markdownFilePayload({}));
+				renderViewer();
+				expect(await screen.findByTestId("diff-md-preview")).toBeInTheDocument();
+			});
+
+			describe("scroll alignment", () => {
+				async function mountWithSectionTop(top: number) {
+					const user = userEvent.setup();
+					vi.mocked(api.request.getTaskDiff).mockResolvedValue(markdownFilePayload({}));
+					renderViewer();
+					await screen.findByTestId("diff-md-preview");
+					const rect = (rectTop: number, height: number) => () => ({
+						top: rectTop, bottom: rectTop + height, left: 0, right: 900, width: 900, height, x: 0, y: rectTop, toJSON: () => ({}),
+					});
+					const scrollRegion = screen.getByTestId("inline-diff-scroll-region");
+					const scrollTo = vi.fn();
+					Object.defineProperty(scrollRegion, "scrollTo", { configurable: true, value: scrollTo });
+					Object.defineProperty(scrollRegion, "getBoundingClientRect", { configurable: true, value: rect(100, 600) });
+					Object.defineProperty(screen.getByTestId("inline-diff-toolbar"), "getBoundingClientRect", { configurable: true, value: rect(100, 40) });
+					const section = document.querySelector('[data-file-id="docs/guide.md"]') as HTMLElement;
+					Object.defineProperty(section, "getBoundingClientRect", { configurable: true, value: rect(top, 400) });
+					await user.click(toggleFor("docs/guide.md"));
+					return scrollTo;
+				}
+
+				it("re-aligns to the file start when its sticky header is stuck above the toolbar", async () => {
+					const scrollTo = await mountWithSectionTop(-300);
+					await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+				});
+
+				it("leaves the scroll alone when the file start is visible", async () => {
+					const scrollTo = await mountWithSectionTop(200);
+					await act(async () => {
+						await new Promise((resolve) => setTimeout(resolve, 50));
+					});
+					expect(scrollTo).not.toHaveBeenCalled();
+				});
+			});
+		});
 	});
 });

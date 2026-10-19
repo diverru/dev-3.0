@@ -121,7 +121,12 @@ interface MarkdownContentProps {
 	rendererConfig: MarkdownRendererConfig;
 	/** Stamps every prose block with its source line range, for selection comments. */
 	sourceLines?: MarkdownSourceLines | null;
+	/** Marks body rows of a table with `data-diff-kind`, one entry per row after the header. */
+	tableRows?: readonly string[];
 }
+
+/** Lines the header and delimiter rows take before the first body row. */
+const TABLE_HEAD_LINES = 2;
 
 export function MarkdownContent({
 	body,
@@ -130,11 +135,20 @@ export function MarkdownContent({
 	imageRootDir,
 	rendererConfig,
 	sourceLines,
+	tableRows,
 }: MarkdownContentProps) {
 	const lineOffset = sourceLines?.lineOffset ?? null;
 	const commentedLines = sourceLines?.commentedLines ?? null;
+	const rowSignature = tableRows?.join(",") ?? "";
 	const components = useMemo<Components>(() => ({
 		...(lineOffset === null ? {} : createSourceLineComponents(lineOffset, commentedLines)),
+		...(tableRows && {
+			tr: ({ node, className, ...props }) => {
+				const line = node?.position?.start.line;
+				const kind = line === undefined ? undefined : tableRows[line - TABLE_HEAD_LINES - 1];
+				return <tr {...props} className={`border-border ${className ?? ""}`} data-streamdown="table-row" data-diff-kind={kind} />;
+			},
+		}),
 		a: ({ node: _node, href, ...props }) => (
 			<ExternalMarkdownLink {...props} href={safeLinkHref(unprotect(href))} />
 		),
@@ -148,17 +162,17 @@ export function MarkdownContent({
 		),
 		input: ({ node: _node, ...props }) => <input {...props} disabled />,
 		strong: ({ node: _node, ...props }) => <strong {...props} />,
-	}), [imageBaseDir, imageRootDir, lineOffset, commentedLines]);
+	}), [imageBaseDir, imageRootDir, lineOffset, commentedLines, rowSignature]);
 
 	// Streamdown's memo comparator ignores `components`, so a changed set of
-	// commented lines only repaints through the key.
+	// commented lines or table row kinds only repaints through the key.
 	const commentedSignature = commentedLines?.size
 		? [...commentedLines].sort((a, b) => a - b).join(",")
 		: "";
 
 	return (
 		<Streamdown
-			key={`${rendererConfig.theme}:${isDocument}:${imageBaseDir ?? ""}:${imageRootDir ?? ""}:${lineOffset ?? ""}:${commentedSignature}`}
+			key={`${rendererConfig.theme}:${isDocument}:${imageBaseDir ?? ""}:${imageRootDir ?? ""}:${lineOffset ?? ""}:${commentedSignature}:${rowSignature}`}
 			mode="static"
 			dir="auto"
 			// `space-y-0` zeroes `margin-top` on every block but the first, and it

@@ -101,6 +101,70 @@ describe("buildMarkdownDiffBlocks", () => {
 	});
 });
 
+describe("buildMarkdownDiffBlocks row-level changes", () => {
+	const changed = (blocks: MarkdownDiffBlock[] | null) => blocks!.filter((block) => block.kind !== "context");
+
+	it("marks one inserted table row instead of repainting the table", () => {
+		const blocks = buildMarkdownDiffBlocks(
+			"| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n",
+			"| a | b |\n|---|---|\n| 1 | 2 |\n| x | y |\n| 3 | 4 |\n",
+		);
+		expect(changed(blocks)).toHaveLength(1);
+		expect(changed(blocks)[0]).toMatchObject({
+			kind: "changed",
+			startLine: 1,
+			tableRows: ["context", "added", "context"],
+			source: "| a | b |\n|---|---|\n| 1 | 2 |\n| x | y |\n| 3 | 4 |",
+		});
+	});
+
+	it("marks one removed table row in place", () => {
+		const blocks = buildMarkdownDiffBlocks(
+			"| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n",
+			"| a | b |\n|---|---|\n| 3 | 4 |\n",
+		);
+		expect(changed(blocks)[0]).toMatchObject({
+			kind: "changed",
+			tableRows: ["removed", "context"],
+			source: "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |",
+		});
+	});
+
+	it("keeps a table whole when its header changes", () => {
+		const blocks = buildMarkdownDiffBlocks(
+			"| a | b |\n|---|---|\n| 1 | 2 |\n",
+			"| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n",
+		);
+		expect(changed(blocks).map((block) => block.kind)).toEqual(["removed", "added"]);
+	});
+
+	it("splits a nested list so one new sub-item is the only change", () => {
+		const blocks = buildMarkdownDiffBlocks(
+			"- a\n  - a1\n  - a2\n- b\n",
+			"- a\n  - a1\n  - new\n  - a2\n- b\n",
+		);
+		expect(changed(blocks)).toEqual([{ kind: "added", source: "- new", startLine: 3, depth: 1 }]);
+	});
+
+	it("keeps exact file lines for items after a nested list", () => {
+		const blocks = buildMarkdownDiffBlocks(
+			"- a\n  - a1\n    - deep\n  - a2\n- b\n",
+			"- a\n  - a1\n    - deep\n  - a2\n- b\n- c\n",
+		);
+		expect(changed(blocks)).toEqual([{ kind: "added", source: "- c", startLine: 6 }]);
+	});
+
+	it("does not re-add ordered items the insertion renumbered", () => {
+		const blocks = buildMarkdownDiffBlocks(
+			"1. one\n2. two\n3. three\n",
+			"1. one\n2. new\n3. two\n4. three\n",
+		);
+		expect(changed(blocks)).toEqual([{ kind: "added", source: "2. new", startLine: 2 }]);
+		const context = blocks!.filter((block) => block.kind === "context").map((block) => block.source);
+		expect(context).toEqual(["1. one", "3. two\n4. three"]);
+	});
+});
+
 function renderDiff(props: Parameters<typeof MarkdownRichDiff>[0]) {
 	return render(
 		<I18nProvider>
@@ -234,5 +298,28 @@ describe("MarkdownRichDiff", () => {
 		renderDiff({ blocks });
 
 		expect(screen.queryByTestId("markdown-diff-unfold")).toBeNull();
+	});
+
+	it("renders a changed table once with its rows marked", () => {
+		const blocks = buildMarkdownDiffBlocks(
+			"| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n",
+			"| a | b |\n|---|---|\n| 1 | 2 |\n| x | y |\n",
+		) ?? [];
+		renderDiff({ blocks });
+
+		const host = screen.getByTestId("markdown-rich-diff");
+		expect(host.querySelectorAll("table")).toHaveLength(1);
+		expect(host.querySelector("tr[data-diff-kind='added']")?.textContent).toContain("x");
+		expect(host.querySelector("tr[data-diff-kind='removed']")?.textContent).toContain("3");
+		expect(host.querySelectorAll("tr[data-diff-kind='added'], tr[data-diff-kind='removed']")).toHaveLength(2);
+		expect(host.querySelector("tr[data-streamdown='table-row']")).not.toBeNull();
+	});
+
+	it("indents a nested list chunk by its depth", () => {
+		const blocks = buildMarkdownDiffBlocks("- a\n  - a1\n", "- a\n  - a1\n  - a2\n") ?? [];
+		renderDiff({ blocks });
+
+		const nested = screen.getByTestId("markdown-rich-diff").querySelector<HTMLElement>("[data-diff-kind='added']")!;
+		expect(nested.style.getPropertyValue("--dev3-md-diff-depth")).toBe("1");
 	});
 });

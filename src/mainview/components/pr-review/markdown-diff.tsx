@@ -1,16 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { marked } from "marked";
 import { useT } from "../../i18n";
 import { MarkdownContent, useMarkdownRendererConfig } from "./markdown";
 import { MarkdownImageProvider } from "./markdown-images";
 
-export type MarkdownDiffKind = "context" | "added" | "removed";
+export type MarkdownRowKind = "context" | "added" | "removed";
+
+/** `changed` is a table present on both sides, with its rows marked one by one. */
+export type MarkdownDiffKind = MarkdownRowKind | "changed";
 
 export type MarkdownDiffBlock = {
 	kind: MarkdownDiffKind;
 	source: string;
-	/** 1-based line this block starts on, in the file side its kind belongs to. */
+	/** 1-based line this block starts on, in the file side its kind belongs to
+	 *  (`changed` blocks belong to the new file). */
 	startLine: number;
+	/** Nesting level of a list-item block; the renderer indents by it. */
+	depth?: number;
+	/** `changed` only: the kind of each body row of the merged table, in order. */
+	tableRows?: MarkdownRowKind[];
 	/** Unchanged and far enough from every change to be worth hiding: the reader
 	 *  gets a foldable row instead of the block, so a one-line edit in a long
 	 *  document is not buried under the rest of the file. */
@@ -23,9 +31,52 @@ const CONTEXT_CHUNKS = 3;
 /** A shorter unchanged run just renders: the fold row would cost more than it hides. */
 const MIN_FOLDED_LINES = 6;
 
+type TableParts = { header: string; delimiter: string; rows: string[] };
+
 /** One diffable unit of a markdown document: a top-level block, or a single
- * item of a list (so adding one bullet does not repaint the whole list). */
-type Chunk = { raw: string; listItem: boolean; startLine: number };
+ * item of a list (so adding one bullet does not repaint the whole list). A list
+ * item with a nested list is split: its head, then each nested item at depth + 1.
+ * `key` is what the diff compares; `raw` is what renders. */
+type Chunk = {
+	raw: string;
+	key: string;
+	listItem: boolean;
+	startLine: number;
+	depth: number;
+	table?: TableParts;
+	rowKinds?: MarkdownRowKind[];
+};
+
+type ListItemToken = { raw: string; tokens?: { type: string; raw: string; items?: ListItemToken[] }[] };
+
+/** An inserted item renumbers the ordered items after it, so the number is not compared. */
+function listItemKey(raw: string, depth: number): string {
+	return `${depth}:${raw.replace(/^(\s*)\d+([.)])/, "$1$2")}`;
+}
+
+/**
+ * `raw` of a top-level item is verbatim, but a nested one is dedented by marked,
+ * so nested positions come from newline counts rather than a search in the source.
+ */
+function pushListItem(chunks: Chunk[], item: ListItemToken, startLine: number, depth: number): void {
+	const raw = item.raw.replace(/\n+$/, "");
+	const tokens = item.tokens ?? [];
+	const nestedAt = tokens.findIndex((token) => token.type === "list");
+	const nested = tokens[nestedAt];
+	const splittable = nestedAt > 0 && tokens.slice(nestedAt + 1).every((token) => token.type === "space");
+	const headLines = tokens.slice(0, Math.max(nestedAt, 0)).reduce((sum, token) => sum + lineCount(token.raw) - 1, 0);
+	const head = item.raw.split("\n").slice(0, headLines).join("\n").replace(/\n+$/, "");
+	if (!splittable || !nested?.items?.length || !head.trim()) {
+		chunks.push({ raw, key: listItemKey(raw, depth), listItem: true, startLine, depth });
+		return;
+	}
+	chunks.push({ raw: head, key: listItemKey(head, depth), listItem: true, startLine, depth });
+	let line = startLine + headLines;
+	for (const child of nested.items) {
+		pushListItem(chunks, child, line, depth + 1);
+		line += lineCount(child.raw) - 1;
+	}
+}
 
 // LCS is O(old × new); a pathological pair of huge documents would freeze the
 // webview, so past this many cells the renderer falls back to a plain preview.
@@ -51,18 +102,22 @@ function chunkMarkdown(source: string): Chunk[] {
 		if (token.type === "space") {
 			continue;
 		}
-		const items = token.type === "list" ? (token as { items?: { raw: string }[] }).items : undefined;
+		const items = token.type === "list" ? (token as { items?: ListItemToken[] }).items : undefined;
 		if (items?.length) {
 			for (const item of items) {
-				const startLine = lineOf(item.raw);
-				chunks.push({ raw: item.raw.replace(/\n+$/, ""), listItem: true, startLine });
+				pushListItem(chunks, item, lineOf(item.raw), 0);
 			}
 			continue;
 		}
 		const startLine = lineOf(token.raw);
 		const raw = token.raw.replace(/\n+$/, "");
 		if (raw.trim()) {
-			chunks.push({ raw, listItem: false, startLine });
+			const chunk: Chunk = { raw, key: raw, listItem: false, startLine, depth: 0 };
+			if (token.type === "table") {
+				const [header, delimiter, ...rows] = raw.split("\n");
+				if (delimiter !== undefined) chunk.table = { header, delimiter, rows };
+			}
+			chunks.push(chunk);
 		}
 	}
 	return chunks;
@@ -76,13 +131,13 @@ function lineCount(raw: string): number {
 	return lines;
 }
 
-/** Longest common subsequence of chunk indices, matching on exact raw text. */
+/** Longest common subsequence of chunk indices, matching on `key`. */
 function lcsMatrix(a: Chunk[], b: Chunk[]): Uint32Array {
 	const width = b.length + 1;
 	const table = new Uint32Array((a.length + 1) * width);
 	for (let i = a.length - 1; i >= 0; i--) {
 		for (let j = b.length - 1; j >= 0; j--) {
-			table[i * width + j] = a[i].raw === b[j].raw
+			table[i * width + j] = a[i].key === b[j].key
 				? table[(i + 1) * width + j + 1] + 1
 				: Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
 		}
@@ -99,7 +154,7 @@ function diffChunks(oldChunks: Chunk[], newChunks: Chunk[]): Op[] {
 	let i = 0;
 	let j = 0;
 	while (i < oldChunks.length && j < newChunks.length) {
-		if (oldChunks[i].raw === newChunks[j].raw) {
+		if (oldChunks[i].key === newChunks[j].key) {
 			ops.push({ kind: "context", chunk: newChunks[j] });
 			i++;
 			j++;
@@ -118,6 +173,52 @@ function diffChunks(oldChunks: Chunk[], newChunks: Chunk[]): Op[] {
 		ops.push({ kind: "added", chunk: newChunks[j] });
 	}
 	return ops;
+}
+
+/** A table pair is only merged when its header and delimiter match exactly. */
+function sameTableHead(a: TableParts, b: TableParts): boolean {
+	return a.header.trim() === b.header.trim() && a.delimiter.trim() === b.delimiter.trim();
+}
+
+/** One table with the old and new body rows interleaved, or null if nothing visible differs. */
+function mergeTables(removed: Chunk, added: Chunk): Chunk | null {
+	const [oldTable, newTable] = [removed.table!, added.table!];
+	if ((oldTable.rows.length + 1) * (newTable.rows.length + 1) > MAX_LCS_CELLS) return null;
+	const asChunks = (rows: string[]): Chunk[] =>
+		rows.map((raw) => ({ raw, key: raw.trim(), listItem: false, startLine: 0, depth: 0 }));
+	const rows = diffChunks(asChunks(oldTable.rows), asChunks(newTable.rows));
+	if (!rows.some((row) => row.kind !== "context")) return null;
+	const raw = [newTable.header, newTable.delimiter, ...rows.map((row) => row.chunk.raw)].join("\n");
+	return { ...added, raw, key: raw, table: undefined, rowKinds: rows.map((row) => row.kind as MarkdownRowKind) };
+}
+
+/** Inside each run of changes, a removed table and an added one with the same
+ *  header become one `changed` op, so a row edit does not repaint the whole table. */
+function pairTables(ops: Op[]): Op[] {
+	const result: Op[] = [];
+	let runStart = 0;
+	for (let index = 0; index <= ops.length; index++) {
+		if (index < ops.length && ops[index].kind !== "context") continue;
+		const run = ops.slice(runStart, index);
+		const replaced = new Map<Op, Op>();
+		const dropped = new Set<Op>();
+		for (const removed of run) {
+			if (removed.kind !== "removed" || !removed.chunk.table) continue;
+			const added = run.find((op) =>
+				op.kind === "added" && op.chunk.table && !replaced.has(op) && sameTableHead(removed.chunk.table!, op.chunk.table));
+			const merged = added && mergeTables(removed.chunk, added.chunk);
+			if (added && merged) {
+				replaced.set(added, { kind: "changed", chunk: merged });
+				dropped.add(removed);
+			}
+		}
+		for (const op of run) {
+			if (!dropped.has(op)) result.push(replaced.get(op) ?? op);
+		}
+		if (index < ops.length) result.push(ops[index]);
+		runStart = index + 1;
+	}
+	return result;
 }
 
 /**
@@ -158,7 +259,10 @@ function groupOps(ops: Op[], visible: boolean[]): MarkdownDiffBlock[] {
 	ops.forEach((op, index) => {
 		const last = groups[groups.length - 1];
 		const folded = !visible[index];
-		if (last && last.kind === op.kind && last.folded === folded && last.chunks[0].listItem === op.chunk.listItem) {
+		if (
+			last && last.kind === op.kind && op.kind !== "changed" && last.folded === folded
+			&& last.chunks[0].listItem === op.chunk.listItem && last.chunks[0].depth === op.chunk.depth
+		) {
 			last.chunks.push(op.chunk);
 		} else {
 			groups.push({ kind: op.kind, chunks: [op.chunk], folded });
@@ -175,9 +279,11 @@ function groupOps(ops: Op[], visible: boolean[]): MarkdownDiffBlock[] {
 			source += chunk.raw;
 			line = chunk.startLine + lineCount(chunk.raw);
 		}
-		return folded
-			? { kind, source, startLine: chunks[0].startLine, folded }
-			: { kind, source, startLine: chunks[0].startLine };
+		const block: MarkdownDiffBlock = { kind, source, startLine: chunks[0].startLine };
+		if (chunks[0].depth) block.depth = chunks[0].depth;
+		if (chunks[0].rowKinds) block.tableRows = chunks[0].rowKinds;
+		if (folded) block.folded = true;
+		return block;
 	});
 }
 
@@ -207,7 +313,7 @@ export function buildMarkdownDiffBlocks(oldSource: string, newSource: string): M
 	if ((oldChunks.length + 1) * (newChunks.length + 1) > MAX_LCS_CELLS) {
 		return null;
 	}
-	const ops = diffChunks(oldChunks, newChunks);
+	const ops = pairTables(diffChunks(oldChunks, newChunks));
 	if (!ops.some((op) => op.kind !== "context")) {
 		return null;
 	}
@@ -281,10 +387,12 @@ export function MarkdownRichDiff({ blocks, imageBaseDir, imageRootDir, commented
 			key={key}
 			className={`dev3-md-diff-block dev3-md-diff-${block.kind}`}
 			data-diff-kind={block.kind}
+			style={block.depth ? { "--dev3-md-diff-depth": block.depth } as CSSProperties : undefined}
 		>
 			<MarkdownContent
 				body={block.source}
 				document
+				tableRows={block.tableRows}
 				imageBaseDir={imageBaseDir}
 				imageRootDir={imageRootDir}
 				rendererConfig={rendererConfig}

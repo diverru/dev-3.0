@@ -625,6 +625,7 @@
 	border-left: 3px solid transparent;
 	border-radius: 0.25rem;
 	padding: 0.0625rem 0.625rem;
+	padding-left: calc(0.625rem + var(--dev3-md-diff-depth, 0) * 1.5rem);
 }
 .dev3-md-diff-block > :first-child {
 	margin-top: 0;
@@ -648,6 +649,23 @@
 }
 .dev3-md-diff-removed > * {
 	opacity: 0.85;
+}
+/* A table present on both sides marks its rows, not the block. */
+.dev3-md-diff-changed tr[data-diff-kind="added"] {
+	background: rgb(var(--success) / 0.14);
+}
+.dev3-md-diff-changed tr[data-diff-kind="removed"] {
+	background: rgb(var(--danger) / 0.14);
+}
+.dev3-md-diff-changed tr[data-diff-kind="removed"] > * {
+	opacity: 0.85;
+	text-decoration: line-through;
+}
+.dev3-md-diff-changed tr[data-diff-kind="added"] > :first-child {
+	box-shadow: inset 3px 0 rgb(var(--success));
+}
+.dev3-md-diff-changed tr[data-diff-kind="removed"] > :first-child {
+	box-shadow: inset 3px 0 rgb(var(--danger));
 }
 
 /* A run of untouched blocks folded away, so a one-line edit in a long document

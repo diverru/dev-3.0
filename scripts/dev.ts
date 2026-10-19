@@ -12,6 +12,7 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { DEV_BUNDLE_ENV } from "../electrobun.config";
 import { WORKER_ENTRIES } from "./build-cli";
 import { type QaScopeMode, qaScopeRoot, seedQaScope } from "./qa-scope";
 
@@ -266,6 +267,8 @@ function signalPids(pids: number[], signal: NodeJS.Signals | number): void {
 
 function main(): void {
 	const mode: DevMode = process.argv.includes("--start") ? "start" : "dev";
+	// Every step and the launched app inherit it, so the bundle gets its own identifier.
+	process.env[DEV_BUNDLE_ENV] = "1";
 	const { shell, reason } = devShell(process.argv, process.env, process.platform, linuxHasWebkit);
 	if (reason) console.log(`[dev] headless (${reason}): serving the UI through dev3 remote, not a desktop window`);
 	for (const step of devPlan(mode, process.execPath, shell)) runOrExit(step);

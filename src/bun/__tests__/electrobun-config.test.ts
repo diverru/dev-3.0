@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import config, { publicAssetCopyEntries } from "../../../electrobun.config";
+import config, { appIdentifier, DEV_BUNDLE_ENV, publicAssetCopyEntries } from "../../../electrobun.config";
 import { assertPackagedConptyRuntime } from "../../shared/native-terminal-runtime";
 
 describe("electrobun macOS entitlements", () => {
@@ -11,6 +11,18 @@ describe("electrobun macOS entitlements", () => {
 		expect(macBuild.entitlements["com.apple.security.device.audio-input"]).toBe(
 			"Required for voice dictation in AI coding assistants",
 		);
+	});
+});
+
+describe("electrobun app identifier", () => {
+	it("keeps the release identifier unless the dev loop asks for its own", () => {
+		expect(appIdentifier({})).toBe("dev3.electrobun.dev");
+		expect(appIdentifier({ [DEV_BUNDLE_ENV]: "1" })).toBe("dev3.electrobun.dev-build");
+	});
+
+	it("is requested by the dev loop for every build and launch it runs", () => {
+		const dev = readFileSync(fileURLToPath(new URL("../../../scripts/dev.ts", import.meta.url)), "utf-8");
+		expect(dev).toContain('process.env[DEV_BUNDLE_ENV] = "1";');
 	});
 });
 

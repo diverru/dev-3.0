@@ -158,6 +158,11 @@ inside a REAL worktree (cwd-based task detection outranks `$DEV3_HOME` by design
   renders. Don't assume.
 - **Tell the user before you start the app any way at all** (visible side effect), and stop it
   after (step 4) unless they want it kept.
+- **Browser QA needs no native window — start headless:**
+  `dev3 dev-server start --wait --env DEV3_DEV_HEADLESS=1`. A desktop start opens a WebKit window
+  on the user's screen; a dev build made before the dev bundle got its own identifier
+  (`appIdentifier()` in `electrobun.config.ts`) also shares the installed app's localStorage, so
+  its writes silently overwrite the user's saved UI state.
 - **`dev3` says `app not running`? Stop and tell the user.** Every route in this skill needs the
   CLI, so there is nothing to fall back to. Never launch the app yourself — a bare `bun run dev`
   (with or without `--qa`, in your shell or in a `dev3 pane run`) opens a native window on the

@@ -40,10 +40,22 @@ export function cliCopyEntry(platform: NodeJS.Platform = process.platform): [str
 
 const [cliCopySource, cliCopyDestination] = cliCopyEntry();
 
+/** Set to "1" by scripts/dev.ts for its build and for the app it launches. */
+export const DEV_BUNDLE_ENV = "DEV3_DEV_BUNDLE";
+
+/**
+ * macOS keys WebKit storage (`~/Library/WebKit/<identifier>`) by bundle identifier, so
+ * a local dev build on the release identifier overwrites the installed app's
+ * localStorage. Release builds never set the variable and keep their identifier.
+ */
+export function appIdentifier(env: Record<string, string | undefined> = process.env): string {
+	return env[DEV_BUNDLE_ENV] === "1" ? "dev3.electrobun.dev-build" : "dev3.electrobun.dev";
+}
+
 export default {
 	app: {
 		name: "dev-3.0",
-		identifier: "dev3.electrobun.dev",
+		identifier: appIdentifier(),
 		version: "1.59.0",
 		// Inbound deep links: `dev3://task/<id>`, `dev3://project/<id>`,
 		// `dev3://new-task?project=<id>&text=<…>`. Electrobun writes CFBundleURLTypes

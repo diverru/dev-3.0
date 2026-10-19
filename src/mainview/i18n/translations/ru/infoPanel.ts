@@ -108,6 +108,8 @@ const infoPanel = {
 	"infoPanel.mergeDisabledUncommitted": "Нечего мержить — сначала закоммить незакоммиченные изменения",
 	"infoPanel.mergeDisabledBehind": "Сначала сделай rebase — ветка позади",
 	"infoPanel.statusLoading": "Загрузка статуса ветки...",
+	"infoPanel.statusLoadFailed": "Статус ветки не загрузился",
+	"infoPanel.statusRetry": "Повторить",
 	"infoPanel.devServerFailed": "Не удалось запустить dev-сервер: {error}",
 	"infoPanel.fileBrowserFailed": "Не удалось открыть файловый браузер: {error}",
 	"infoPanel.uncommittedChanges": "+{ins} / −{del}",

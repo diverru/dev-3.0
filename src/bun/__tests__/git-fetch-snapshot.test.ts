@@ -27,12 +27,17 @@ type SpawnResponse = {
 	stderr: string;
 	hang?: boolean;
 	holdStreamsOpen?: boolean;
+	/** Stays running until the test calls the matching `gates` releaser. */
+	gated?: boolean;
 };
 
 let spawnResponses: SpawnResponse[] = [];
 let lastSpawnOptions: { env?: Record<string, string> } | undefined;
 let spawnCommands: string[][] = [];
 let killedProcesses = 0;
+let gates: Array<() => void> = [];
+let activeSpawns = 0;
+let maxActiveSpawns = 0;
 
 function queueResponse(exitCode: number, stdout: string, stderr = "") {
 	spawnResponses.push({ exitCode, stdout, stderr });
@@ -49,7 +54,14 @@ vi.mock("../spawn", () => ({
 			? new Promise<number>((resolve) => {
 				resolveExit = resolve;
 			})
-			: Promise.resolve(response.exitCode);
+			: response.gated
+				? new Promise<number>((resolve) => {
+					gates.push(() => resolve(response.exitCode));
+				})
+				: Promise.resolve(response.exitCode);
+		activeSpawns += 1;
+		maxActiveSpawns = Math.max(maxActiveSpawns, activeSpawns);
+		void exited.then(() => { activeSpawns -= 1; });
 		return {
 			exited,
 			kill: () => {
@@ -75,6 +87,8 @@ vi.mock("../spawn", () => ({
 import {
 	fetchCompareRef,
 	fetchOrigin,
+	fetchOriginBranches,
+	fetchSshCommand,
 	_resetFetchState,
 	saveDiffSnapshot,
 	taskDir,
@@ -85,6 +99,9 @@ beforeEach(() => {
 	spawnResponses = [];
 	spawnCommands = [];
 	killedProcesses = 0;
+	gates = [];
+	activeSpawns = 0;
+	maxActiveSpawns = 0;
 	_resetFetchState();
 });
 
@@ -96,7 +113,7 @@ describe("fetchOrigin", () => {
 		const ok = await fetchOrigin("/repo");
 		expect(lastSpawnOptions?.env).toMatchObject({
 			GIT_TERMINAL_PROMPT: "0",
-			GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o ConnectTimeout=10",
+			GIT_SSH_COMMAND: expect.stringContaining("ssh -o BatchMode=yes -o ConnectTimeout=10"),
 		});
 		expect(ok).toBe(true);
 	});
@@ -161,6 +178,43 @@ describe("fetchOrigin", () => {
 		const ok2 = await fetchOrigin("/repo");
 		expect(ok2).toBe(false);
 		expect(spawnResponses).toHaveLength(1); // queued response not consumed
+	});
+
+	it("force bypasses the success cooldown", async () => {
+		queueResponse(0, "");
+		expect(await fetchOrigin("/repo")).toBe(true);
+
+		queueResponse(0, "");
+		expect(await fetchOrigin("/repo", undefined, undefined, { force: true })).toBe(true);
+		expect(spawnResponses).toHaveLength(0); // second fetch actually ran
+	});
+
+	it("force bypasses the failure backoff and clears it on success", async () => {
+		queueResponse(128, "", "fatal: no remote");
+		expect(await fetchOrigin("/repo")).toBe(false);
+
+		queueResponse(0, "");
+		expect(await fetchOrigin("/repo", undefined, undefined, { force: true })).toBe(true);
+		expect(spawnResponses).toHaveLength(0);
+	});
+
+	it("force still reuses an in-flight fetch for the same key", async () => {
+		queueResponse(0, "");
+		queueResponse(0, "");
+		const [a, b] = await Promise.all([
+			fetchOrigin("/repo", "main"),
+			fetchOrigin("/repo", "main", undefined, { force: true }),
+		]);
+		expect(a && b).toBe(true);
+		expect(spawnResponses).toHaveLength(1);
+	});
+
+	it("fetchCompareRef passes force through", async () => {
+		queueResponse(128, "", "fatal");
+		expect(await fetchCompareRef("/repo", "main")).toBe(false);
+
+		queueResponse(0, "");
+		expect(await fetchCompareRef("/repo", "main", undefined, { force: true })).toBe(true);
 	});
 
 	it("retries after the failure backoff window elapses", async () => {
@@ -238,6 +292,147 @@ describe("fetchOrigin", () => {
 });
 
 // ─── fetchCompareRef ─────────────────────────────────────────────────────────
+
+/** Spawned fetches, minus the `-c core.quotepath=false` every git call carries. */
+function fetchArgs(): string[][] {
+	return spawnCommands
+		.map((cmd) => cmd.filter((arg) => arg !== "-c" && arg !== "core.quotepath=false"))
+		.filter((cmd) => cmd[1] === "fetch");
+}
+
+describe("fetch SSH connection reuse", () => {
+	it("adds ControlMaster options on unix", () => {
+		for (const platform of ["darwin", "linux"] as const) {
+			const cmd = fetchSshCommand(platform, "/home/u/.dev3.0/ssh");
+			expect(cmd).toContain("ssh -o BatchMode=yes -o ConnectTimeout=10");
+			expect(cmd).toContain("-o ControlMaster=auto");
+			expect(cmd).toContain(`-o 'ControlPath="/home/u/.dev3.0/ssh/%C"'`);
+			expect(cmd).toContain("-o ControlPersist=300");
+		}
+	});
+
+	it("leaves the command unchanged on Windows or without a control dir", () => {
+		const base = "ssh -o BatchMode=yes -o ConnectTimeout=10";
+		expect(fetchSshCommand("win32", "C:/dev3/ssh")).toBe(base);
+		expect(fetchSshCommand("linux", null)).toBe(base);
+	});
+
+	it("quotes a control dir with spaces and single quotes for sh", () => {
+		expect(fetchSshCommand("linux", "/Users/a b/it's/ssh")).toContain(
+			`-o 'ControlPath="/Users/a b/it'\\''s/ssh/%C"'`,
+		);
+	});
+
+	it("fetchOrigin passes the platform's command to git", async () => {
+		const platform = vi.spyOn(process, "platform", "get");
+		try {
+			platform.mockReturnValue("linux");
+			queueResponse(0, "");
+			await fetchOrigin("/repo", "a");
+			expect(lastSpawnOptions?.env?.GIT_SSH_COMMAND).toContain("ControlMaster=auto");
+			expect(lastSpawnOptions?.env?.GIT_SSH_COMMAND).toContain("/tmp/dev3-test/ssh/%C");
+
+			platform.mockReturnValue("win32");
+			queueResponse(0, "");
+			await fetchOrigin("/repo", "b");
+			expect(lastSpawnOptions?.env?.GIT_SSH_COMMAND).not.toContain("ControlMaster");
+		} finally {
+			platform.mockRestore();
+		}
+	});
+});
+
+describe("fetch queue priority", () => {
+	it("runs a priority job before a queued normal job, one git fetch at a time", async () => {
+		spawnResponses.push({ exitCode: 0, stdout: "", stderr: "", gated: true }); // running job
+		queueResponse(0, "");
+		queueResponse(0, "");
+
+		const running = fetchOrigin("/repo", "running");
+		await vi.waitFor(() => expect(gates).toHaveLength(1));
+		const normal = fetchOrigin("/repo", "normal");
+		const priority = fetchOrigin("/repo", "urgent", undefined, { priority: true });
+		await new Promise((r) => setTimeout(r, 20));
+		expect(fetchArgs()).toHaveLength(1); // nothing else started while the first runs
+
+		gates[0]();
+		await Promise.all([running, normal, priority]);
+
+		expect(fetchArgs().map((cmd) => cmd[3])).toEqual(["running", "urgent", "normal"]);
+		expect(maxActiveSpawns).toBe(1);
+	});
+
+	it("keeps FIFO order among priority jobs", async () => {
+		spawnResponses.push({ exitCode: 0, stdout: "", stderr: "", gated: true });
+		queueResponse(0, "");
+		queueResponse(0, "");
+		queueResponse(0, "");
+
+		const running = fetchOrigin("/repo", "running");
+		await vi.waitFor(() => expect(gates).toHaveLength(1));
+		const jobs = [
+			fetchOrigin("/repo", "n1"),
+			fetchOrigin("/repo", "p1", undefined, { priority: true }),
+			fetchOrigin("/repo", "p2", undefined, { priority: true }),
+		];
+		await new Promise((r) => setTimeout(r, 20));
+		gates[0]();
+		await Promise.all([running, ...jobs]);
+
+		expect(fetchArgs().map((cmd) => cmd[3])).toEqual(["running", "p1", "p2", "n1"]);
+	});
+});
+
+describe("fetchOriginBranches", () => {
+	it("fetches both branches in one git process and sets each cooldown", async () => {
+		queueResponse(0, "");
+		expect(await fetchOriginBranches("/repo", ["main", "dev3/t"])).toBe(true);
+		expect(fetchArgs()).toEqual([["git", "fetch", "origin", "main", "dev3/t", "--quiet"]]);
+
+		// Single-branch fetches now see the cooldown: no further git process.
+		expect(await fetchOrigin("/repo", "main")).toBe(true);
+		expect(await fetchOrigin("/repo", "dev3/t")).toBe(true);
+		expect(await fetchOriginBranches("/repo", ["main", "dev3/t"])).toBe(true);
+		expect(fetchArgs()).toHaveLength(1);
+	});
+
+	it("skips only the branches in cooldown", async () => {
+		queueResponse(0, "");
+		await fetchOrigin("/repo", "main");
+		queueResponse(0, "");
+		expect(await fetchOriginBranches("/repo", ["main", "dev3/t"])).toBe(true);
+		expect(fetchArgs().map((cmd) => cmd.slice(2))).toEqual([["origin", "main", "--quiet"], ["origin", "dev3/t", "--quiet"]]);
+	});
+
+	it("force fetches branches that are in cooldown", async () => {
+		queueResponse(0, "");
+		await fetchOriginBranches("/repo", ["a", "b"]);
+		queueResponse(0, "");
+		expect(await fetchOriginBranches("/repo", ["a", "b"], undefined, { force: true })).toBe(true);
+		expect(fetchArgs()).toHaveLength(2);
+	});
+
+	it("falls back to per-branch fetches when the combined fetch fails", async () => {
+		queueResponse(128, "", "fatal: couldn't find remote ref dead");
+		queueResponse(0, ""); // main
+		queueResponse(128, "", "fatal: couldn't find remote ref dead"); // dead
+		expect(await fetchOriginBranches("/repo", ["main", "dead"])).toBe(false);
+		expect(fetchArgs().map((cmd) => cmd.slice(2))).toEqual([
+			["origin", "main", "dead", "--quiet"],
+			["origin", "main", "--quiet"],
+			["origin", "dead", "--quiet"],
+		]);
+
+		// main is in cooldown, dead is in backoff: nothing spawns, and the miss is reported.
+		expect(await fetchOriginBranches("/repo", ["main", "dead"])).toBe(false);
+		expect(fetchArgs()).toHaveLength(3);
+	});
+
+	it("does nothing for an empty list", async () => {
+		expect(await fetchOriginBranches("/repo", [])).toBe(true);
+		expect(spawnCommands).toHaveLength(0);
+	});
+});
 
 describe("fetchCompareRef", () => {
 	/** Spawned fetches, minus the `-c core.quotepath=false` every git call carries. */

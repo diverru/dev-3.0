@@ -1692,6 +1692,29 @@ describe("TaskInfoPanel", () => {
 	});
 
 	describe("branch status display", () => {
+		it("shows an error with Retry when the status poll fails, and Retry forces a refresh", async () => {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			mockedApi.request.getBranchStatus.mockRejectedValueOnce(new Error("git exploded"));
+
+			await act(async () => {
+				// A task id no earlier test cached a status for.
+				renderPanel(makeTask({ id: "t-status-error" }));
+			});
+
+			const label = screen.getAllByText("Branch status failed to load")[0];
+			expect(label).toHaveClass("text-danger");
+			expect(label.closest("[title]")).toHaveAttribute("title", expect.stringContaining("git exploded"));
+
+			mockedApi.request.getBranchStatus.mockResolvedValue({ ...defaultBranchStatus, ahead: 5, behind: 0 });
+			await user.click(screen.getAllByRole("button", { name: "Retry" })[0]);
+
+			await waitFor(() => {
+				expect(mockedApi.request.getBranchStatus).toHaveBeenLastCalledWith(expect.objectContaining({ refresh: true }));
+			});
+			await waitFor(() => expect(screen.getAllByText(/5 commits ahead/).length).toBeGreaterThanOrEqual(1));
+			expect(screen.queryByText("Branch status failed to load")).not.toBeInTheDocument();
+		});
+
 		it("shows ahead badge when ahead > 0", async () => {
 			mockedApi.request.getBranchStatus.mockResolvedValue({
 				...defaultBranchStatus,

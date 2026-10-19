@@ -102,6 +102,8 @@ const infoPanel = {
 	"infoPanel.mergeDisabledUncommitted": "Nothing to merge — commit the uncommitted changes first",
 	"infoPanel.mergeDisabledBehind": "Rebase first — branch is behind",
 	"infoPanel.statusLoading": "Loading branch status...",
+	"infoPanel.statusLoadFailed": "Branch status failed to load",
+	"infoPanel.statusRetry": "Retry",
 	"infoPanel.devServerFailed": "Failed to start dev server: {error}",
 	"infoPanel.fileBrowserFailed": "Failed to open file browser: {error}",
 	"infoPanel.uncommittedChanges": "+{ins} / −{del}",

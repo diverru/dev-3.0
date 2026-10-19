@@ -1688,9 +1688,19 @@ export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
 // fetchProjectQueue serializes the actual git subprocess per repo so that
 // concurrent fetches for *different* branches don't race on .git/packed-refs.lock.
 // Same-branch callers are coalesced by fetchInFlight before reaching the queue.
+// Priority jobs (the task the user is looking at) run before queued normal jobs.
 const fetchInFlight = new Map<string, Promise<boolean>>();
 const fetchLastSuccess = new Map<string, number>();
-const fetchProjectQueue = new Map<string, Promise<void>>();
+interface FetchQueueJob {
+	priority: boolean;
+	start: () => void;
+}
+interface RepoFetchQueue {
+	pending: FetchQueueJob[];
+	running: boolean;
+}
+const fetchProjectQueue = new Map<string, RepoFetchQueue>();
+const FETCH_QUEUE_WAIT_LOG_MS = 2_000;
 const FETCH_COOLDOWN_MS = 5_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
@@ -1711,12 +1721,98 @@ function isInFailureBackoff(cacheKey: string, now: number): boolean {
 	return now - failure.at < fetchFailureBackoffMs(failure.failures);
 }
 
+/**
+ * `force` skips the cooldown and failure backoff (an explicit user refresh); it still joins the queue.
+ * `priority` moves the job ahead of queued normal jobs of the same repo.
+ */
+export interface FetchOptions {
+	force?: boolean;
+	priority?: boolean;
+}
+
+/**
+ * ControlMaster reuse turns a ~2.2 s fetch into ~0.75 s (the SSH handshake is most of it).
+ * The ControlPath is double-quoted for ssh and single-quoted for the `sh` that runs GIT_SSH_COMMAND.
+ */
+export function fetchSshCommand(platform: NodeJS.Platform, controlDir: string | null): string {
+	const base = "ssh -o BatchMode=yes -o ConnectTimeout=10";
+	if (platform === "win32" || !controlDir) return base;
+	const controlPath = `ControlPath="${controlDir}/%C"`.replaceAll("'", `'\\''`);
+	return `${base} -o ControlMaster=auto -o '${controlPath}' -o ControlPersist=300`;
+}
+
+let sshControlDir: string | null | undefined;
+function getSshControlDir(): string | null {
+	if (sshControlDir !== undefined) return sshControlDir;
+	try {
+		const dir = `${DEV3_HOME}/ssh`;
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		sshControlDir = dir;
+	} catch (err) {
+		log.warn("ssh control dir unavailable, fetching without connection reuse", { error: String(err) });
+		sshControlDir = null;
+	}
+	return sshControlDir;
+}
+
+function enqueueFetchJob<T>(projectPath: string, branch: string | undefined, priority: boolean, work: () => Promise<T>): Promise<T> {
+	let queue = fetchProjectQueue.get(projectPath);
+	if (!queue) {
+		queue = { pending: [], running: false };
+		fetchProjectQueue.set(projectPath, queue);
+	}
+	const repoQueue = queue;
+	const enqueuedAt = Date.now();
+	return new Promise<T>((resolve, reject) => {
+		const job: FetchQueueJob = {
+			priority,
+			start: () => {
+				const waitMs = Date.now() - enqueuedAt;
+				if (waitMs > FETCH_QUEUE_WAIT_LOG_MS) {
+					log.info("fetchOrigin: queue wait", { projectPath, branch, waitMs, priority });
+				}
+				Promise.resolve().then(work).then(resolve, reject).finally(() => {
+					repoQueue.running = false;
+					drainFetchQueue(projectPath, repoQueue);
+				});
+			},
+		};
+		// After the last priority job, before every normal one.
+		const firstNormal = repoQueue.pending.findIndex((queued) => !queued.priority);
+		if (priority && firstNormal !== -1) repoQueue.pending.splice(firstNormal, 0, job);
+		else repoQueue.pending.push(job);
+		drainFetchQueue(projectPath, repoQueue);
+	});
+}
+
+function drainFetchQueue(projectPath: string, queue: RepoFetchQueue): void {
+	if (queue.running) return;
+	const next = queue.pending.shift();
+	if (!next) {
+		if (fetchProjectQueue.get(projectPath) === queue) fetchProjectQueue.delete(projectPath);
+		return;
+	}
+	queue.running = true;
+	next.start();
+}
+
+async function runGitFetch(projectPath: string, cmd: string[], timeoutMs: number) {
+	return run(cmd, projectPath, {
+		timeoutMs,
+		env: {
+			GIT_TERMINAL_PROMPT: "0",
+			GIT_SSH_COMMAND: fetchSshCommand(process.platform, getSshControlDir()),
+		},
+	});
+}
+
 export async function fetchOrigin(
 	projectPath: string,
 	branch?: string,
 	timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+	options: FetchOptions = {},
 ): Promise<boolean> {
-	return fetchFromRemote(projectPath, "origin", branch, timeoutMs);
+	return fetchFromRemote(projectPath, "origin", branch, timeoutMs, options);
 }
 
 async function fetchFromRemote(
@@ -1724,6 +1820,7 @@ async function fetchFromRemote(
 	remote: string,
 	branch?: string,
 	timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+	{ force = false, priority = false }: FetchOptions = {},
 ): Promise<boolean> {
 	await reportCurrentPreparationStage("fetching-origin");
 	const now = Date.now();
@@ -1732,13 +1829,13 @@ async function fetchFromRemote(
 	const lastSuccess = fetchLastSuccess.get(cacheKey) ?? 0;
 
 	// Skip if a successful fetch completed recently
-	if (now - lastSuccess < FETCH_COOLDOWN_MS) {
+	if (!force && now - lastSuccess < FETCH_COOLDOWN_MS) {
 		log.debug("fetchOrigin: skipping (cooldown)", { projectPath, branch, msSinceLast: now - lastSuccess });
 		return true;
 	}
 
 	// Skip if recent fetches for this key keep failing (exponential backoff)
-	if (isInFailureBackoff(cacheKey, now)) {
+	if (!force && isInFailureBackoff(cacheKey, now)) {
 		log.debug("fetchOrigin: skipping (failure backoff)", {
 			projectPath,
 			branch,
@@ -1754,18 +1851,14 @@ async function fetchFromRemote(
 		return existing;
 	}
 
-	// Chain behind any concurrent fetch on this repo. All setup below is synchronous
-	// so the queue tail is correctly sequenced even when two callers enter back-to-back.
-	const prevInQueue = fetchProjectQueue.get(projectPath) ?? Promise.resolve();
-
-	const promise: Promise<boolean> = prevInQueue.catch(() => {}).then(async () => {
+	const promise: Promise<boolean> = enqueueFetchJob(projectPath, branch, priority, async () => {
 		// Re-check cooldown: a preceding branch fetch may have taken long enough that we
 		// now fall within the window, or another caller for this branch got here first.
-		if (Date.now() - (fetchLastSuccess.get(cacheKey) ?? 0) < FETCH_COOLDOWN_MS) {
+		if (!force && Date.now() - (fetchLastSuccess.get(cacheKey) ?? 0) < FETCH_COOLDOWN_MS) {
 			log.debug("fetchOrigin: skipping (cooldown after queue wait)", { projectPath, branch });
 			return true;
 		}
-		if (isInFailureBackoff(cacheKey, Date.now())) {
+		if (!force && isInFailureBackoff(cacheKey, Date.now())) {
 			log.debug("fetchOrigin: skipping (failure backoff after queue wait)", { projectPath, branch });
 			return false;
 		}
@@ -1780,13 +1873,7 @@ async function fetchFromRemote(
 				: ["git", "fetch", remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`, "--quiet"]
 			: ["git", "fetch", remote, "--quiet"];
 		log.debug("Fetching remote", { projectPath, remote, branch });
-		const result = await run(cmd, projectPath, {
-			timeoutMs,
-			env: {
-				GIT_TERMINAL_PROMPT: "0",
-				GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o ConnectTimeout=10",
-			},
-		});
+		const result = await runGitFetch(projectPath, cmd, timeoutMs);
 		if (result.ok) {
 			fetchLastSuccess.set(cacheKey, Date.now());
 			fetchLastFailure.delete(cacheKey);
@@ -1810,14 +1897,77 @@ async function fetchFromRemote(
 		return result.ok;
 	});
 
-	// Become the new queue tail. Errors are swallowed so subsequent fetches always run.
-	fetchProjectQueue.set(projectPath, promise.then(() => {}).catch(() => {}));
 	fetchInFlight.set(cacheKey, promise);
 	try {
 		return await promise;
 	} finally {
 		fetchInFlight.delete(cacheKey);
 	}
+}
+
+/**
+ * Fetch several origin branches in ONE git process (one SSH handshake). Branches in
+ * cooldown or failure backoff are left out unless `force`; when the combined fetch fails
+ * (e.g. one branch was deleted upstream) each branch is retried on its own so a dead
+ * branch never blocks the others.
+ */
+export async function fetchOriginBranches(
+	projectPath: string,
+	branches: string[],
+	timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+	options: FetchOptions = {},
+): Promise<boolean> {
+	const { force = false, priority = false } = options;
+	const unique = [...new Set(branches)];
+	if (unique.length === 0) return true;
+	if (unique.length === 1) return fetchOrigin(projectPath, unique[0], timeoutMs, options);
+	await reportCurrentPreparationStage("fetching-origin");
+
+	const keyOf = (branch: string) => `${projectPath}:origin/${branch}`;
+	const dueBranches = () => {
+		const now = Date.now();
+		return force
+			? unique
+			: unique.filter((b) => now - (fetchLastSuccess.get(keyOf(b)) ?? 0) >= FETCH_COOLDOWN_MS && !isInFailureBackoff(keyOf(b), now));
+	};
+	const due = dueBranches();
+	const backedOff = force ? 0 : unique.filter((b) => isInFailureBackoff(keyOf(b), Date.now())).length;
+	if (due.length === 0) return backedOff === 0;
+
+	const groupKey = `${projectPath}:origin:${due.join(",")}`;
+	const existing = fetchInFlight.get(groupKey);
+	if (existing) return existing;
+
+	const combined: Promise<boolean> = enqueueFetchJob(projectPath, due.join(","), priority, async () => {
+		const stillDue = dueBranches().filter((b) => due.includes(b));
+		if (stillDue.length === 0) return true;
+		const startedAt = performance.now();
+		log.debug("Fetching remote", { projectPath, remote: "origin", branches: stillDue });
+		const result = await runGitFetch(projectPath, ["git", "fetch", "origin", ...stillDue, "--quiet"], timeoutMs);
+		if (result.ok) {
+			for (const b of stillDue) {
+				fetchLastSuccess.set(keyOf(b), Date.now());
+				fetchLastFailure.delete(keyOf(b));
+			}
+			log.debug("fetchOrigin finished", { projectPath, branches: stillDue, durationMs: Math.round(performance.now() - startedAt) });
+		} else {
+			log.warn("fetchOrigin (combined) failed, retrying per branch", { projectPath, branches: stillDue, stderr: result.stderr });
+		}
+		return result.ok;
+	});
+	fetchInFlight.set(groupKey, combined);
+	let ok: boolean;
+	try {
+		ok = await combined;
+	} finally {
+		fetchInFlight.delete(groupKey);
+	}
+	if (!ok) {
+		const results: boolean[] = [];
+		for (const b of due) results.push(await fetchOrigin(projectPath, b, timeoutMs, options));
+		ok = results.every(Boolean);
+	}
+	return ok && backedOff === 0;
 }
 
 /** Configured remote names, e.g. `["origin", "arditti"]`. Empty when git fails. */
@@ -1875,6 +2025,14 @@ export async function refAuthorAndSubject(
 	return { author: author?.trim() || null, subject: subject?.trim() || null };
 }
 
+/** The non-origin remote that owns a remote-qualified compare ref (`arditti/feat/x`), else null. */
+export async function forkRemoteOf(projectPath: string, branch: string): Promise<string | null> {
+	const slash = branch.indexOf("/");
+	if (slash <= 0) return null;
+	const remote = branch.slice(0, slash);
+	return remote !== "origin" && (await listRemotes(projectPath)).includes(remote) ? remote : null;
+}
+
 /**
  * Fetch the branch a task actually compares against. A fork-review base is
  * stored remote-qualified (`arditti/feat/x`) and resolves to
@@ -1886,15 +2044,13 @@ export async function fetchCompareRef(
 	projectPath: string,
 	branch: string,
 	timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+	options: FetchOptions = {},
 ): Promise<boolean> {
-	const slash = branch.indexOf("/");
-	if (slash > 0) {
-		const remote = branch.slice(0, slash);
-		if (remote !== "origin" && (await listRemotes(projectPath)).includes(remote)) {
-			return fetchFromRemote(projectPath, remote, branch.slice(slash + 1), timeoutMs);
-		}
+	const forkRemote = await forkRemoteOf(projectPath, branch);
+	if (forkRemote) {
+		return fetchFromRemote(projectPath, forkRemote, branch.slice(forkRemote.length + 1), timeoutMs, options);
 	}
-	return fetchFromRemote(projectPath, "origin", branch, timeoutMs);
+	return fetchFromRemote(projectPath, "origin", branch, timeoutMs, options);
 }
 
 /** Is `ref` fully contained in `targetRef`? False when either ref is unresolvable. */

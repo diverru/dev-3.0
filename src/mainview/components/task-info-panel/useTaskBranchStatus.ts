@@ -36,6 +36,24 @@ interface UseTaskBranchStatusParams {
 	enabled?: boolean;
 }
 
+// The global RPC timeout is 6 minutes; a lost status request must surface as an error much sooner.
+const BRANCH_STATUS_POLL_TIMEOUT_MS = 20_000;
+const BRANCH_STATUS_REFRESH_TIMEOUT_MS = 45_000;
+
+function requestBranchStatus(
+	params: { taskId: string; projectId: string; compareRef?: string; refresh?: boolean },
+	timeoutMs: number,
+): Promise<BranchStatus> {
+	let timer: ReturnType<typeof setTimeout>;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`Branch status request timed out after ${timeoutMs / 1000} s`)),
+			timeoutMs,
+		);
+	});
+	return Promise.race([api.request.getBranchStatus(params), timeout]).finally(() => clearTimeout(timer));
+}
+
 function getDefaultTaskCompareRef(taskBaseBranch: string, project: Project): string {
 	const projectBaseBranch = project.defaultBaseBranch || "main";
 	const projectDefaultCompareRef = project.defaultCompareRef;
@@ -72,6 +90,7 @@ export function useTaskBranchStatus({
 		key: "",
 		status: null,
 	});
+	const [errorEntry, setErrorEntry] = useState<{ key: string; message: string } | null>(null);
 	const [rebasing, setRebasing] = useState(false);
 	const [committing, setCommitting] = useState(false);
 	const [merging, setMerging] = useState(false);
@@ -106,9 +125,12 @@ export function useTaskBranchStatus({
 			? statusEntry.status
 			: readCachedBranchStatus(cacheKey);
 
+	const statusError = canShowStatus && errorEntry?.key === cacheKey ? errorEntry.message : null;
+
 	const applyStatus = useCallback((key: string, status: BranchStatus) => {
 		writeCachedBranchStatus(key, status);
 		setStatusEntry({ key, status });
+		setErrorEntry(null);
 	}, []);
 
 	const completeTask = useCallback(() => {
@@ -207,18 +229,19 @@ export function useTaskBranchStatus({
 
 		const fetchStatus = async () => {
 			try {
-				const status = await api.request.getBranchStatus({
+				const status = await requestBranchStatus({
 					taskId: task.id,
 					projectId: project.id,
 					compareRef: compareRef || undefined,
-				});
+				}, BRANCH_STATUS_POLL_TIMEOUT_MS);
 
 				if (!cancelled) {
 					applyStatus(cacheKey, status);
 					await offerMergeCompletionIfMergedRef.current(status, { force: false });
 				}
-			} catch {
-				// Polling retries on the next tick.
+			} catch (err) {
+				// Polling retries on the next tick; the error keeps the UI from spinning forever.
+				if (!cancelled) setErrorEntry({ key: cacheKey, message: String(err) });
 			}
 		};
 
@@ -295,11 +318,12 @@ export function useTaskBranchStatus({
 
 			let refreshedStatus: BranchStatus | null = null;
 			try {
-				const status = await api.request.getBranchStatus({
+				const status = await requestBranchStatus({
 					taskId: task.id,
 					projectId: project.id,
 					compareRef: compareRef || undefined,
-				});
+					refresh: true,
+				}, BRANCH_STATUS_REFRESH_TIMEOUT_MS);
 				refreshedStatus = status;
 				applyStatus(cacheKey, status);
 			} catch {
@@ -337,16 +361,18 @@ export function useTaskBranchStatus({
 
 		setRefreshingStatus(true);
 		try {
-			const status = await api.request.getBranchStatus({
+			const status = await requestBranchStatus({
 				taskId: task.id,
 				projectId: project.id,
 				compareRef: compareRef || undefined,
-			});
+				refresh: true,
+			}, BRANCH_STATUS_REFRESH_TIMEOUT_MS);
 			applyStatus(cacheKey, status);
 			// A manual click is a force re-check: re-offer completion even if the
 			// user dismissed the popup earlier for this same merged head.
 			await offerMergeCompletionIfMerged(status, { force: true });
 		} catch (err) {
+			setErrorEntry({ key: cacheKey, message: String(err) });
 			toast.error(t("infoPanel.refreshStatusFailed", { error: String(err) }), { taskId: task.id });
 		}
 		setRefreshingStatus(false);
@@ -551,7 +577,8 @@ export function useTaskBranchStatus({
 		rebasing,
 		refreshingStatus,
 		selectCompareRef,
-		statusLoading: canShowStatus && !branchStatus,
+		statusError,
+		statusLoading: canShowStatus && !branchStatus && !statusError,
 	};
 }
 

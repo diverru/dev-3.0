@@ -102,6 +102,8 @@ const infoPanel = {
 	"infoPanel.mergeDisabledUncommitted": "Nada que mergear — primero haz commit de los cambios sin commit",
 	"infoPanel.mergeDisabledBehind": "Primero haga rebase — la rama está atrás",
 	"infoPanel.statusLoading": "Cargando estado de la rama...",
+	"infoPanel.statusLoadFailed": "El estado de la rama no se cargó",
+	"infoPanel.statusRetry": "Reintentar",
 	"infoPanel.devServerFailed": "Error al iniciar el servidor de desarrollo: {error}",
 	"infoPanel.fileBrowserFailed": "Error al abrir el explorador de archivos: {error}",
 	"infoPanel.uncommittedChanges": "+{ins} / −{del}",

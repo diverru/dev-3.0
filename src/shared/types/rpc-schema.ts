@@ -783,7 +783,7 @@ export type AppRPCSchema = {
 				response: { notInstalled: true; installCommand: string; linuxHint?: boolean } | void;
 			};
 			getBranchStatus: {
-				params: { taskId: string; projectId: string; compareRef?: string };
+				params: { taskId: string; projectId: string; compareRef?: string; refresh?: boolean };
 				response: BranchStatus;
 			};
 			getUnsavedWork: {

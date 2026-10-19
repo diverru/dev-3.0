@@ -97,6 +97,8 @@ vi.mock("../git", () => ({
 	getDefaultBranch: vi.fn(),
 	fetchOrigin: vi.fn().mockResolvedValue(true),
 	fetchCompareRef: vi.fn().mockResolvedValue(true),
+	fetchOriginBranches: vi.fn().mockResolvedValue(true),
+	forkRemoteOf: vi.fn().mockResolvedValue(null),
 	fetchFork: vi.fn().mockResolvedValue(true),
 	listRemotes: vi.fn().mockResolvedValue(["origin"]),
 	hasOriginRemote: vi.fn().mockResolvedValue(true),
@@ -5510,7 +5512,7 @@ describe("handlers.getTaskDiff base branch resolution", () => {
 		await handlers.getTaskDiff({ taskId: task.id, projectId: project.id, mode: "branch" });
 
 		// Fetch and diff against the real base — never the branch compared to itself.
-		expect(git.fetchCompareRef).toHaveBeenCalledWith(project.path, "main");
+		expect(git.fetchCompareRef).toHaveBeenCalledWith(project.path, "main", undefined, { priority: true });
 		expect(git.getTaskDiff).toHaveBeenCalledWith(
 			"/tmp/wt",
 			"branch",
@@ -5949,7 +5951,8 @@ describe("handlers.getBranchStatus", () => {
 
 			await handlers.getBranchStatus({ taskId: "task-1", projectId: "proj-1" });
 
-			expect(git.refExists).not.toHaveBeenCalled();
+			// Only the fetch helper's origin/<branch> probe; nothing about the base.
+			expect(git.refExists).not.toHaveBeenCalledWith(expect.anything(), "main");
 			expect(git.isRefMergedInto).not.toHaveBeenCalled();
 		});
 	});
@@ -5977,6 +5980,131 @@ describe("handlers.getBranchStatus", () => {
 
 		expect(git.getBranchStatus).toHaveBeenCalledWith("/tmp/wt", "origin/main");
 		expect(git.getBranchDiffStats).toHaveBeenCalledWith("/tmp/wt", "origin/main");
+	});
+
+	describe("remote fetch is off the poll path", () => {
+		afterEach(() => {
+			vi.mocked(git.refExists).mockResolvedValue(true);
+			vi.mocked(git.forkRemoteOf).mockResolvedValue(null);
+		});
+
+		function setup(opts: { pushed?: boolean } = {}) {
+			const project = makeProject({ defaultBaseBranch: "main" });
+			const task = makeTask({ worktreePath: "/tmp/wt", branchName: "dev3/t", baseBranch: "main" });
+			vi.mocked(data.getProject).mockResolvedValue(project);
+			vi.mocked(data.getTask).mockResolvedValue(task);
+			vi.mocked(git.getCurrentBranch).mockResolvedValue("dev3/t");
+			vi.mocked(git.hasOriginRemote).mockResolvedValue(true);
+			vi.mocked(git.forkRemoteOf).mockResolvedValue(null);
+			vi.mocked(git.fetchOriginBranches).mockResolvedValue(true);
+			vi.mocked(git.refExists).mockImplementation(async (_p: string, ref: string) =>
+				ref === "origin/dev3/t" ? (opts.pushed ?? true) : true);
+			vi.mocked(git.getBranchStatus).mockResolvedValue({ ahead: 0, behind: 2, baseUnreachable: false });
+			vi.mocked(git.getUncommittedChanges).mockResolvedValue({ insertions: 0, deletions: 0 });
+			vi.mocked(git.getUnpreservedCount).mockResolvedValue(0);
+			vi.mocked(git.getBranchDiffStats).mockResolvedValue({ files: 0, insertions: 0, deletions: 0, fileStats: [] });
+			return { project, task };
+		}
+
+		it("the poll answers from local refs without waiting for a hung fetch", async () => {
+			const { project, task } = setup();
+			vi.mocked(git.fetchOriginBranches).mockReturnValue(new Promise<boolean>(() => {}));
+
+			const result = await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
+
+			expect(result.behind).toBe(2);
+			await vi.waitFor(() => expect(git.fetchOriginBranches).toHaveBeenCalled());
+		});
+
+		it("the poll swallows a failing background fetch", async () => {
+			const { project, task } = setup();
+			vi.mocked(git.fetchOriginBranches).mockRejectedValue(new Error("network down"));
+
+			await expect(handlers.getBranchStatus({ taskId: task.id, projectId: project.id })).resolves.toMatchObject({ behind: 2 });
+		});
+
+		it("fetches base and a pushed task branch in one priority call", async () => {
+			const { project, task } = setup({ pushed: true });
+
+			await handlers.getBranchStatus({ taskId: task.id, projectId: project.id, refresh: true });
+
+			expect(git.fetchOriginBranches).toHaveBeenCalledTimes(1);
+			expect(git.fetchOriginBranches).toHaveBeenCalledWith(
+				project.path, ["main", "dev3/t"], undefined, { force: true, priority: true },
+			);
+			expect(git.fetchCompareRef).not.toHaveBeenCalled();
+		});
+
+		it("does not fetch a task branch that was never pushed", async () => {
+			const { project, task } = setup({ pushed: false });
+
+			await handlers.getBranchStatus({ taskId: task.id, projectId: project.id, refresh: true });
+
+			expect(git.fetchOriginBranches).toHaveBeenCalledWith(
+				project.path, ["main"], undefined, { force: true, priority: true },
+			);
+		});
+
+		it("the poll passes force false with priority", async () => {
+			const { project, task } = setup();
+
+			await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
+
+			await vi.waitFor(() => expect(git.fetchOriginBranches).toHaveBeenCalledWith(
+				project.path, ["main", "dev3/t"], undefined, { force: false, priority: true },
+			));
+		});
+
+		it("a fork base keeps its own fetchCompareRef call", async () => {
+			const { project, task } = setup();
+			vi.mocked(data.getTask).mockResolvedValue({ ...task, baseBranch: "arditti/feat/x" });
+			vi.mocked(git.forkRemoteOf).mockResolvedValue("arditti");
+
+			await handlers.getBranchStatus({ taskId: task.id, projectId: project.id, refresh: true });
+
+			expect(git.fetchCompareRef).toHaveBeenCalledWith(
+				project.path, "arditti/feat/x", undefined, { force: true, priority: true },
+			);
+			expect(git.fetchOriginBranches).toHaveBeenCalledWith(
+				project.path, ["dev3/t"], undefined, { force: true, priority: true },
+			);
+		});
+
+		it("a refresh waits for the fetch before answering", async () => {
+			const { project, task } = setup();
+			let release: (ok: boolean) => void = () => {};
+			vi.mocked(git.fetchOriginBranches).mockImplementation(() => new Promise<boolean>((resolve) => { release = resolve; }));
+
+			let settled = false;
+			const pending = handlers.getBranchStatus({ taskId: task.id, projectId: project.id, refresh: true })
+				.then(() => { settled = true; });
+			await new Promise((r) => setTimeout(r, 20));
+			expect(settled).toBe(false);
+
+			release(true);
+			await pending;
+			expect(settled).toBe(true);
+		});
+
+		it("a refresh does not reuse an in-flight poll", async () => {
+			const { project, task } = setup();
+			let releasePoll: () => void = () => {};
+			vi.mocked(git.getBranchStatus).mockImplementationOnce(
+				() => new Promise((resolve) => {
+					releasePoll = () => resolve({ ahead: 0, behind: 2, baseUnreachable: false });
+				}),
+			);
+
+			const poll = handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
+			await new Promise((r) => setTimeout(r, 20));
+			await handlers.getBranchStatus({ taskId: task.id, projectId: project.id, refresh: true });
+
+			expect(git.fetchOriginBranches).toHaveBeenCalledWith(
+				project.path, expect.any(Array), undefined, { force: true, priority: true },
+			);
+			releasePoll();
+			await poll;
+		});
 	});
 
 	it("auto-syncs stored branchName when live branch differs", async () => {
@@ -6362,7 +6490,7 @@ describe("handlers.getTaskDiff", () => {
 			compareLabel: "origin/main",
 		});
 
-		expect(git.fetchCompareRef).toHaveBeenCalledWith(project.path, "main");
+		expect(git.fetchCompareRef).toHaveBeenCalledWith(project.path, "main", undefined, { priority: true });
 		expect(git.getTaskDiff).toHaveBeenCalledWith("/tmp/wt", "branch", {
 			baseBranch: "main",
 			compareRef: "origin/main",

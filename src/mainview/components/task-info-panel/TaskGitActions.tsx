@@ -141,6 +141,7 @@ export default function TaskGitActions({
 		rebasing,
 		refreshingStatus,
 		selectCompareRef,
+		statusError,
 		statusLoading,
 	} = useTaskBranchStatus({
 		task,
@@ -812,15 +813,30 @@ export default function TaskGitActions({
 		document.body,
 	);
 
+	const showStatusError = showLoading && !!statusError && !branchStatus;
+
 	return (
 		<>
 			{branchMenuPortal}
 			{branchChip}
 
-			{(branchStatusBadge || uncommittedBadge || (showLoading && statusLoading)) && (
+			{(branchStatusBadge || uncommittedBadge || (showLoading && (statusLoading || showStatusError))) && (
 				<>
 					{task.branchName && <span className="text-fg-muted text-xs flex-shrink-0">|</span>}
 					{changesSummary}
+					{showStatusError && (
+						<span className="flex items-center gap-1 text-micro text-danger flex-shrink-0" title={statusError ?? undefined}>
+							{t("infoPanel.statusLoadFailed")}
+							<button
+								type="button"
+								onClick={handleRefreshStatus}
+								disabled={refreshingStatus}
+								className="underline hover:text-fg disabled:opacity-40"
+							>
+								{t("infoPanel.statusRetry")}
+							</button>
+						</span>
+					)}
 					{showLoading && statusLoading && (
 						<span className="flex items-center gap-1 text-micro text-fg-muted flex-shrink-0">
 							<svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">

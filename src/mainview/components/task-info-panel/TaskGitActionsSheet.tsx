@@ -67,6 +67,9 @@ export default function TaskGitActionsSheet({
 		handleOpenPR,
 		handlePush,
 		handleRebase,
+		handleRefreshStatus,
+		refreshingStatus,
+		statusError,
 		statusLoading,
 	} = git;
 
@@ -225,6 +228,19 @@ export default function TaskGitActionsSheet({
 				{t("infoPanel.gitSection")}
 				{statusLoading && (
 					<span className="h-3 w-3 animate-spin rounded-full border-2 border-current/30 border-t-current" aria-hidden="true" />
+				)}
+				{statusError && !branchStatus && (
+					<span className="flex items-center gap-1 text-micro font-normal normal-case tracking-normal text-danger" title={statusError}>
+						{t("infoPanel.statusLoadFailed")}
+						<button
+							type="button"
+							onClick={() => void handleRefreshStatus()}
+							disabled={refreshingStatus}
+							className="underline hover:text-fg disabled:opacity-40"
+						>
+							{t("infoPanel.statusRetry")}
+						</button>
+					</span>
 				)}
 			</h3>
 			<div className="touch-actions flex flex-col gap-2">

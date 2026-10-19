@@ -112,3 +112,77 @@ describe("useTaskBranchStatus — stale-while-refreshing status", () => {
 		expect(result.current.statusLoading).toBe(true);
 	});
 });
+
+describe("useTaskBranchStatus — poll failure", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		clearBranchStatusCache();
+	});
+
+	it("exposes an error instead of loading forever, and retry forces a refresh", async () => {
+		getBranchStatus.mockRejectedValueOnce(new Error("boom"));
+		const { result } = renderForTask(taskWithId("task-err"));
+
+		await waitFor(() => expect(result.current.statusError).toContain("boom"));
+		expect(result.current.statusLoading).toBe(false);
+		expect(getBranchStatus.mock.calls[0][0].refresh).toBeUndefined();
+
+		getBranchStatus.mockResolvedValue(statusFor(4));
+		await act(async () => { await result.current.handleRefreshStatus(); });
+
+		expect(getBranchStatus).toHaveBeenLastCalledWith(expect.objectContaining({ refresh: true }));
+		await waitFor(() => expect(result.current.branchStatus?.ahead).toBe(4));
+		expect(result.current.statusError).toBeNull();
+	});
+
+	it("keeps the error when the retry fails too", async () => {
+		getBranchStatus.mockRejectedValue(new Error("still down"));
+		const { result } = renderForTask(taskWithId("task-err2"));
+		await waitFor(() => expect(result.current.statusError).toContain("still down"));
+
+		await act(async () => { await result.current.handleRefreshStatus(); });
+		expect(result.current.statusError).toContain("still down");
+		expect(result.current.statusLoading).toBe(false);
+	});
+
+	it("turns a status request that never resolves into an error after the poll timeout", async () => {
+		vi.useFakeTimers();
+		try {
+			getBranchStatus.mockImplementation(() => new Promise<BranchStatus>(() => {}));
+			const { result } = renderForTask(taskWithId("task-hung"));
+
+			await act(async () => { await vi.advanceTimersByTimeAsync(19_000); });
+			expect(result.current.statusError).toBeNull();
+			expect(result.current.statusLoading).toBe(true);
+
+			await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+			expect(result.current.statusError).toContain("timed out after 20 s");
+			expect(result.current.statusLoading).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("gives a manual refresh 45 s before it fails", async () => {
+		vi.useFakeTimers();
+		try {
+			getBranchStatus.mockResolvedValueOnce(statusFor(1));
+			const { result } = renderForTask(taskWithId("task-hung2"));
+			await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+			expect(result.current.branchStatus?.ahead).toBe(1);
+
+			getBranchStatus.mockImplementation(() => new Promise<BranchStatus>(() => {}));
+			let refresh!: Promise<void>;
+			act(() => { refresh = result.current.handleRefreshStatus(); });
+			await act(async () => { await vi.advanceTimersByTimeAsync(44_000); });
+			expect(result.current.refreshingStatus).toBe(true);
+
+			await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+			await act(async () => { await refresh; });
+			expect(result.current.refreshingStatus).toBe(false);
+			expect(result.current.statusError).toContain("timed out after 45 s");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

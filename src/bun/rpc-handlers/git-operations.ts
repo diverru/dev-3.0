@@ -209,7 +209,7 @@ async function healDeadCompareBase(project: Project, task: Task, baseBranch: str
 	return projectBase;
 }
 
-async function getBranchStatusImpl(params: { taskId: string; projectId: string; compareRef?: string }): Promise<BranchStatus> {
+async function getBranchStatusImpl(params: { taskId: string; projectId: string; compareRef?: string; refresh?: boolean }): Promise<BranchStatus> {
 	const project = await data.getProject(params.projectId);
 	const task = await data.getTask(project, params.taskId);
 
@@ -231,20 +231,39 @@ async function getBranchStatusImpl(params: { taskId: string; projectId: string; 
 	// Nothing to fetch without a remote — the doomed `git fetch origin <base>` was
 	// spawned on every 15s poll of a local-only project and always failed.
 	const hasRemote = await git.hasOriginRemote(project.path);
-	if (hasRemote) {
-		log.debug("getBranchStatus: fetching origin", { worktreePath: task.worktreePath, baseBranch: resolvedBase, branchName: branchForPush });
-		await git.fetchCompareRef(project.path, resolvedBase);
+	const compareRefBranch = params.compareRef?.startsWith("origin/") ? params.compareRef.slice("origin/".length) : null;
+	const fetchOptions = { force: params.refresh === true, priority: true };
+	// One ssh handshake for base + task branch. A task branch with no origin ref was never
+	// pushed, so there is nothing to fetch for it. A fork base keeps its own fetch.
+	const refreshRemoteRefs = async () => {
+		const originBranches: string[] = [];
+		if (hasRemote) {
+			log.debug("getBranchStatus: fetching origin", { worktreePath: task.worktreePath, baseBranch: resolvedBase, branchName: branchForPush });
+			if (await git.forkRemoteOf(project.path, resolvedBase)) {
+				await git.fetchCompareRef(project.path, resolvedBase, undefined, fetchOptions);
+			} else {
+				originBranches.push(resolvedBase);
+			}
+			if (branchForPush && branchForPush !== resolvedBase && branchForPush !== compareRefBranch
+				&& await git.refExists(project.path, `origin/${branchForPush}`)) {
+				originBranches.push(branchForPush);
+			}
+			await git.fetchOriginBranches(project.path, originBranches, undefined, fetchOptions);
+		}
+		if (compareRefBranch && compareRefBranch !== resolvedBase) {
+			await git.fetchCompareRef(project.path, compareRefBranch, undefined, fetchOptions);
+		}
+	};
+	if (params.refresh) {
+		await refreshRemoteRefs();
+	} else {
+		// Fire-and-forget: the poll answers from local refs, the next poll reads the fetched ones.
+		void refreshRemoteRefs().catch((err) => {
+			log.debug("getBranchStatus: background fetch failed (non-fatal)", { taskId: task.id, error: String(err) });
+		});
 	}
 	const baseBranch = await healDeadCompareBase(project, task, resolvedBase);
 	const ref = await resolveCompareRef(project, baseBranch, params.compareRef);
-	const compareRefBranch = params.compareRef?.startsWith("origin/") ? params.compareRef.slice("origin/".length) : null;
-	if (compareRefBranch && compareRefBranch !== baseBranch) {
-		await git.fetchCompareRef(project.path, compareRefBranch);
-	}
-	// Also refresh origin/<task-branch> so getUnpreservedCount reflects out-of-band remote pushes.
-	if (hasRemote && branchForPush && branchForPush !== baseBranch && branchForPush !== compareRefBranch) {
-		await git.fetchOrigin(project.path, branchForPush);
-	}
 	/**
 	 * PR detection, which doubles as the "can `gh` work here at all" probe. gh's
 	 * refusal on a non-GitHub remote is definitive and free — this call already
@@ -357,9 +376,9 @@ async function getUnsavedWork(params: { taskId: string; projectId: string }): Pr
 	return { ...uncommitted, unpushed, preservedOutsideBranch, ahead: counts.ahead, baseUnreachable: counts.baseUnreachable };
 }
 
-async function getBranchStatus(params: { taskId: string; projectId: string; compareRef?: string }) {
+async function getBranchStatus(params: { taskId: string; projectId: string; compareRef?: string; refresh?: boolean }) {
 	log.debug("→ getBranchStatus", params);
-	const dedupKey = `${params.taskId}:${params.compareRef ?? ""}`;
+	const dedupKey = `${params.taskId}:${params.compareRef ?? ""}:${params.refresh ? "refresh" : ""}`;
 	const runtime = lifecycleActorRuntime(params.taskId);
 	const inFlight = runtime.branchChecks ??= new Map();
 	const existing = inFlight.get(dedupKey);
@@ -399,10 +418,10 @@ async function getTaskDiff(params: {
 	// `HEAD~N..HEAD` and clamps against the already on-disk `origin/<base>`
 	// merge-base — so neither pays for a network fetch.
 	if (params.mode !== "uncommitted" && params.mode !== "recent" && await git.hasOriginRemote(project.path)) {
-		await git.fetchCompareRef(project.path, baseBranch);
+		await git.fetchCompareRef(project.path, baseBranch, undefined, { priority: true });
 		const compareRefBranch = params.compareRef?.startsWith("origin/") ? params.compareRef.slice("origin/".length) : null;
 		if (compareRefBranch && compareRefBranch !== baseBranch) {
-			await git.fetchCompareRef(project.path, compareRefBranch);
+			await git.fetchCompareRef(project.path, compareRefBranch, undefined, { priority: true });
 		}
 	}
 

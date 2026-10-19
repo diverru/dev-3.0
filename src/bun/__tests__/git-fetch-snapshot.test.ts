@@ -317,6 +317,15 @@ describe("fetch SSH connection reuse", () => {
 		expect(fetchSshCommand("linux", null)).toBe(base);
 	});
 
+	it("drops connection reuse when the socket path would not fit sun_path", () => {
+		const base = "ssh -o BatchMode=yes -o ConnectTimeout=10";
+		const qaHome = "/var/folders/04/ym_1nnl161n0p59pjl247ynr0000gn/T/dev3-qa/0123456789ab/seeded/home/.dev3.0/ssh";
+		expect(fetchSshCommand("darwin", qaHome)).toBe(base);
+		expect(fetchSshCommand("darwin", `/${"a".repeat(44)}`)).toContain("ControlMaster=auto");
+		expect(fetchSshCommand("darwin", `/${"a".repeat(45)}`)).toBe(base);
+		expect(fetchSshCommand("linux", `/${"é".repeat(23)}`)).toBe(base);
+	});
+
 	it("quotes a control dir with spaces and single quotes for sh", () => {
 		expect(fetchSshCommand("linux", "/Users/a b/it's/ssh")).toContain(
 			`-o 'ControlPath="/Users/a b/it'\\''s/ssh/%C"'`,

@@ -1731,12 +1731,21 @@ export interface FetchOptions {
 }
 
 /**
+ * ssh refuses outright (exit 255) when a ControlPath does not fit sun_path (104 bytes on
+ * macOS, NUL included) instead of connecting directly. The master also binds a temporary
+ * `<path>.<16 random chars>` first, so that suffix has to fit too.
+ */
+const SSH_SOCKET_PATH_MAX_BYTES = 103;
+const SSH_CONTROL_SOCKET_NAME_BYTES = "/".length + 40 + ".".length + 16;
+
+/**
  * ControlMaster reuse turns a ~2.2 s fetch into ~0.75 s (the SSH handshake is most of it).
  * The ControlPath is double-quoted for ssh and single-quoted for the `sh` that runs GIT_SSH_COMMAND.
  */
 export function fetchSshCommand(platform: NodeJS.Platform, controlDir: string | null): string {
 	const base = "ssh -o BatchMode=yes -o ConnectTimeout=10";
 	if (platform === "win32" || !controlDir) return base;
+	if (Buffer.byteLength(controlDir) + SSH_CONTROL_SOCKET_NAME_BYTES > SSH_SOCKET_PATH_MAX_BYTES) return base;
 	const controlPath = `ControlPath="${controlDir}/%C"`.replaceAll("'", `'\\''`);
 	return `${base} -o ControlMaster=auto -o '${controlPath}' -o ControlPersist=300`;
 }

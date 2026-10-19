@@ -21,7 +21,7 @@ vi.mock("../spawn", async () => {
 		},
 	};
 });
-import { mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DOWNLOAD_TTL_MS, FILE_LINK_SANDBOX, attachmentDisposition, mintFileLink, mintFolderLink, openCheckedFile, openFileLinkResponses, resetFileLinks, resolveFileLinkPath, serveFileLink } from "../file-links";
 import { spawnSync } from "node:child_process";
@@ -237,7 +237,7 @@ describe("openCheckedFile", () => {
 		symlinkSync(join(base, "secret"), join(base, "docs"));
 		expect(await openCheckedFile(checked!)).toBeNull();
 
-		rmSync(join(base, "docs"));
+		unlinkSync(join(base, "docs"));
 		renameSync(join(base, "real-docs"), join(base, "docs"));
 		const handle = await openCheckedFile(checked!);
 		expect(handle).not.toBeNull();

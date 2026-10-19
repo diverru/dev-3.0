@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
@@ -396,7 +396,7 @@ describe("createFileLink", () => {
 			const { url } = await appHandlers.createFileLink({ path: join(worktree, "linked-docs", "index.html") });
 			expect(resolveFileLinkPath(url.replace(/[^/]+$/, "notes.txt"))).toBeNull();
 		} finally {
-			rmSync(join(worktree, "linked-docs"));
+			unlinkSync(join(worktree, "linked-docs"));
 		}
 	}));
 

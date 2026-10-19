@@ -136,7 +136,10 @@ export async function run(
 		: await Promise.all([stdoutPromise, stderrPromise]);
 	const failure = outcome.timedOut ? `timed out after ${opts?.timeoutMs}ms` : stderr.trim();
 	const result = { ok: outcome.code === 0, stdout: stdout.trim(), stderr: failure };
-	if (!result.ok) {
+	// `rev-parse --verify --quiet` exits 1 with no stderr when the ref is absent: an answer, not a failure.
+	const quietRefMiss = outcome.code === 1 && !stderr.trim() && gitSubcommand(finalCmd) === "rev-parse"
+		&& finalCmd.includes("--verify") && finalCmd.includes("--quiet");
+	if (!result.ok && !quietRefMiss) {
 		log.warn("Git command failed", {
 			command: finalCmd,
 			exitCode: outcome.code,
@@ -806,7 +809,7 @@ export async function getDefaultBranch(path: string): Promise<string> {
 
 	// Strategy 4: check local branches
 	const mainCheck = await run(
-		["git", "rev-parse", "--verify", "main"],
+		["git", "rev-parse", "--verify", "--quiet", "main"],
 		path,
 	);
 	if (mainCheck.ok) {
@@ -815,7 +818,7 @@ export async function getDefaultBranch(path: string): Promise<string> {
 	}
 
 	const masterCheck = await run(
-		["git", "rev-parse", "--verify", "master"],
+		["git", "rev-parse", "--verify", "--quiet", "master"],
 		path,
 	);
 	if (masterCheck.ok) {
@@ -962,7 +965,7 @@ function branchName(task: Task): string {
 }
 
 async function localBranchExists(projectPath: string, branch: string): Promise<boolean> {
-	return (await run(["git", "rev-parse", "--verify", `refs/heads/${branch}`], projectPath)).ok;
+	return (await run(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], projectPath)).ok;
 }
 
 /**
@@ -1406,7 +1409,7 @@ export async function createWorktree(
 				// Set up remote tracking so `git push` targets the original remote branch
 				const remoteRef = isRemoteRef ? existingBranch : `origin/${resolvedBranch}`;
 				const remoteCheckResult = await run(
-					["git", "rev-parse", "--verify", remoteRef],
+					["git", "rev-parse", "--verify", "--quiet", remoteRef],
 					project.path,
 				);
 				if (remoteCheckResult.ok) {
@@ -1450,19 +1453,19 @@ export async function createWorktree(
 	);
 	const remoteBase = `origin/${baseBranch}`;
 	const refCheckResult = fetched
-		? await run(["git", "rev-parse", "--verify", remoteBase], project.path)
+		? await run(["git", "rev-parse", "--verify", "--quiet", remoteBase], project.path)
 		: { ok: false };
 	const resolvedBase = refCheckResult.ok ? remoteBase : baseBranch;
 
 	// Verify the resolved base actually exists before attempting worktree creation
 	if (!refCheckResult.ok) {
-		const localCheck = await run(["git", "rev-parse", "--verify", baseBranch], project.path);
+		const localCheck = await run(["git", "rev-parse", "--verify", "--quiet", baseBranch], project.path);
 		if (!localCheck.ok) {
 			// An empty repository (no commits at all) needs a different fix —
 			// create an initial commit — than a repo that simply lacks the
 			// configured base branch (fix the base-branch setting). The generic
 			// "branch does not exist" message misleads in the empty-repo case.
-			const hasAnyCommit = (await run(["git", "rev-parse", "--verify", "HEAD"], project.path)).ok;
+			const hasAnyCommit = (await run(["git", "rev-parse", "--verify", "--quiet", "HEAD"], project.path)).ok;
 			if (!hasAnyCommit) {
 				log.error("Repository has no commits", { baseBranch, taskId: task.id });
 				throw new Error(
@@ -1560,7 +1563,7 @@ export async function listBranches(projectPath: string): Promise<BranchInfo[]> {
 }
 
 export async function refExists(projectPath: string, ref: string): Promise<boolean> {
-	const result = await run(["git", "rev-parse", "--verify", ref], projectPath);
+	const result = await run(["git", "rev-parse", "--verify", "--quiet", ref], projectPath);
 	return result.ok;
 }
 
@@ -1853,7 +1856,7 @@ export async function isForeignBranchRef(projectPath: string, existingBranch?: s
  * slash, because `feat/x` is itself a legal local branch name.
  */
 export async function localBranchNameForRef(projectPath: string, ref: string): Promise<string> {
-	const isRemoteRef = (await run(["git", "rev-parse", "--verify", `refs/remotes/${ref}`], projectPath)).ok;
+	const isRemoteRef = (await run(["git", "rev-parse", "--verify", "--quiet", `refs/remotes/${ref}`], projectPath)).ok;
 	return isRemoteRef ? ref.slice(ref.indexOf("/") + 1) : ref;
 }
 
@@ -1953,7 +1956,7 @@ export async function getOriginUrl(projectPath: string): Promise<string | null> 
  * lease silently overwrites a push nobody fetched.
  */
 export async function resolveRef(repoPath: string, ref: string): Promise<string | null> {
-	const result = await run(["git", "rev-parse", "--verify", `${ref}^{commit}`], repoPath);
+	const result = await run(["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
 	return result.ok && result.stdout ? result.stdout.trim() : null;
 }
 
@@ -2489,7 +2492,7 @@ export async function getUnpushedCount(
 
 	// Check if the remote tracking branch exists
 	const ref = await run(
-		["git", "rev-parse", "--verify", `origin/${branchName}`],
+		["git", "rev-parse", "--verify", "--quiet", `origin/${branchName}`],
 		worktreePath,
 	);
 	if (!ref.ok) return -1; // sentinel: branch was never pushed
@@ -2598,7 +2601,7 @@ export async function getBehindOriginCount(
 	if (!branchName) return 0;
 
 	const ref = await run(
-		["git", "rev-parse", "--verify", `origin/${branchName}`],
+		["git", "rev-parse", "--verify", "--quiet", `origin/${branchName}`],
 		worktreePath,
 	);
 	if (!ref.ok) return 0;

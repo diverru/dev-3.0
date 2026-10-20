@@ -65,7 +65,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ./node_modules
-          key: bun-deps-macos-${{ inputs.arch }}-${{ hashFiles('bun.lock') }}
+          key: bun-deps-macos-${{ inputs.arch }}-${{ hashFiles('bun.lock', 'patches/**') }}
 
       - name: Install dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -76,7 +76,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ./node_modules
-          key: bun-deps-macos-${{ inputs.arch }}-${{ hashFiles('bun.lock') }}
+          key: bun-deps-macos-${{ inputs.arch }}-${{ hashFiles('bun.lock', 'patches/**') }}
 
       - name: Import code signing certificate
         env:

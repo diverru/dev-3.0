@@ -37,6 +37,7 @@ WORKDIR /src
 
 # Dependency layer first (so code changes don't invalidate the npm install).
 COPY package.json bun.lock ./
+COPY patches ./patches
 RUN bun install --frozen-lockfile
 
 # Source tree. .dockerignore excludes node_modules, dist, build, artifacts,

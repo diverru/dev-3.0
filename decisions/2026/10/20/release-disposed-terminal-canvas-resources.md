@@ -10,7 +10,7 @@ In ghostty-web 0.4.0, `SelectionManager.attachEventListeners` registers an anony
 
 ## Decision
 
-Pin ghostty-web to 0.4.0 and persist its cleanup changes with Bun's `patchedDependencies` in `patches/ghostty-web@0.4.0.patch`: store/remove the selection `mousedown`, remove terminal `mouseup` regardless of `isOpen`, and zero the renderer canvas during disposal. The patch targets the ESM entry imported by all dev3 callers; the unused UMD distribution is outside this change. Zero `installFilePathUnderlines`' overlay dimensions before removal as well, matching the existing glyph-atlas cleanup policy; `TerminalView`'s opening and redraw sequence needs no change.
+Pin ghostty-web to 0.4.0 and persist its cleanup changes with Bun's `patchedDependencies` in `patches/ghostty-web@0.4.0.patch`: store/remove the selection `mousedown`, remove terminal `mouseup` regardless of `isOpen`, and zero the renderer canvas during disposal. Docker copies the patches before installing dependencies, and dependency cache keys hash patch contents as well as the lockfile. The patch targets the ESM entry imported by all dev3 callers; the unused UMD distribution is outside this change. Zero `installFilePathUnderlines`' overlay dimensions before removal as well, matching the existing glyph-atlas cleanup policy; `TerminalView`'s opening and redraw sequence needs no change.
 
 ## Risks
 

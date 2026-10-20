@@ -41,7 +41,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ./node_modules
-          key: bun-deps-windows-x64-${{ hashFiles('bun.lock') }}
+          key: bun-deps-windows-x64-${{ hashFiles('bun.lock', 'patches/**') }}
 
       - name: Install dependencies
         # Skipped only on a Windows cache hit: on the posix legs the restore step above
@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ./node_modules
-          key: bun-deps-windows-x64-${{ hashFiles('bun.lock') }}
+          key: bun-deps-windows-x64-${{ hashFiles('bun.lock', 'patches/**') }}
 
       - name: Native shell launch pure tests
         run: bun run test:native-shell-launch
@@ -432,7 +432,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ./node_modules
-          key: bun-deps-windows-x64-${{ hashFiles('bun.lock') }}
+          key: bun-deps-windows-x64-${{ hashFiles('bun.lock', 'patches/**') }}
 
       - name: Install dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -445,7 +445,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ./node_modules
-          key: bun-deps-windows-x64-${{ hashFiles('bun.lock') }}
+          key: bun-deps-windows-x64-${{ hashFiles('bun.lock', 'patches/**') }}
 
       # postBuild assembles + validates the host image inside the bundle;
       # postPackage re-verifies it from the final `.tar.zst` and drives the

@@ -35,7 +35,7 @@ describe("real ghostty terminal disposal", () => {
 		}
 	});
 
-	it("removes every document mouse handler across repeated opens and disposals", () => {
+	it("cleans up document mouse and click listeners registered during open", () => {
 		const add = vi.spyOn(document, "addEventListener");
 		const remove = vi.spyOn(document, "removeEventListener");
 		for (let cycle = 0; cycle < 3; cycle++) {

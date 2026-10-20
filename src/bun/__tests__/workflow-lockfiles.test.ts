@@ -13,13 +13,13 @@ const workflowsDir = resolve(repoRoot, ".github/workflows");
  * at the new files, rebuilding the same cap one file over. A fixed list of inputs is a
  * silent limit.
  */
-function cacheKeyLockfiles(): Array<{ workflow: string; lockfile: string }> {
-	const found: Array<{ workflow: string; lockfile: string }> = [];
+function cacheKeyLockfiles(): Array<{ workflow: string; lockfile: string; additionalInputs: string }> {
+	const found: Array<{ workflow: string; lockfile: string; additionalInputs: string }> = [];
 	for (const entry of readdirSync(workflowsDir, { withFileTypes: true })) {
 		if (!entry.isFile() || !/\.ya?ml$/.test(entry.name)) continue;
 		const yaml = readFileSync(join(workflowsDir, entry.name), "utf8");
-		for (const match of yaml.matchAll(/hashFiles\('([^']+)'\)/g)) {
-			found.push({ workflow: entry.name, lockfile: match[1] });
+		for (const match of yaml.matchAll(/hashFiles\('([^']+)'([^)]*)\)/g)) {
+			found.push({ workflow: entry.name, lockfile: match[1], additionalInputs: match[2] });
 		}
 	}
 	return found;
@@ -45,5 +45,13 @@ describe("workflow cache keys reference lockfiles that exist", () => {
 			missing,
 			`These workflows build a cache key from a lockfile that does not exist, so the key is constant and the cache never invalidates:\n${missing.join("\n")}\nFix: point hashFiles() at a real lockfile path.`,
 		).toEqual([]);
+	});
+
+	it("invalidates Bun dependency caches when patch contents change", () => {
+		const bunKeys = cacheKeyLockfiles().filter(({ lockfile }) => lockfile === "bun.lock");
+		expect(bunKeys.length).toBeGreaterThan(0);
+		for (const { workflow, additionalInputs } of bunKeys) {
+			expect(additionalInputs, `${workflow} must hash dependency patches`).toContain("'patches/**'");
+		}
 	});
 });

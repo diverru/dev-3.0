@@ -92,7 +92,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ./node_modules
-          key: bun-deps-windows-x64-${{ hashFiles('bun.lock') }}
+          key: bun-deps-windows-x64-${{ hashFiles('bun.lock', 'patches/**') }}
 
       - name: Install dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -105,7 +105,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ./node_modules
-          key: bun-deps-windows-x64-${{ hashFiles('bun.lock') }}
+          key: bun-deps-windows-x64-${{ hashFiles('bun.lock', 'patches/**') }}
 
       # Pinned model-catalog proxy sidecar (decisions/2026/08/15/model-catalog-and-model-roles.md).
       # A pinned target that 404s or drifts fails the build; an unpinned one ships

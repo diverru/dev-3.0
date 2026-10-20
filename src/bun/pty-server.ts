@@ -1770,26 +1770,16 @@ function applyClientSizes(session: PtySession, repaintUnchanged = true): void {
 	const { cols: minCols, rows: minRows } = target;
 
 	if (session.appliedCols === minCols && session.appliedRows === minRows) {
-		// A native viewer is repainted from the journal on attach, so it never needs
-		// the redraw jiggle below — and jiggling would resize a live shell for a
-		// client that merely reconnected.
+		// A native viewer is repainted from the journal on attach.
 		if (session.backend === "native") return;
-		// Target size is unchanged — typically a new, equal-or-larger viewer just
-		// connected. tmux does NOT emit a SIGWINCH / redraw for a same-size
-		// resize, so that viewer's freshly-mounted blank terminal would never get
-		// its initial paint. Force a full redraw with a one-row jiggle (same trick
-		// as the WKWebView resize nudge in window-manager.ts).
-		if (repaintUnchanged) {
-			try {
-				term.resize(minCols, Math.max(1, minRows - 1));
-				// Restore whatever is applied WHEN the timer fires: a real resize can land
-				// inside these 16ms, and restoring the captured size would undo it.
-				setTimeout(() => {
-					try { term.resize(session.appliedCols ?? minCols, session.appliedRows ?? minRows); } catch { /* ignore */ }
-				}, 16);
-			} catch (err) {
-				log.debug("applyClientSizes jiggle failed", { error: String(err) });
-			}
+		// A fresh viewer needs its first paint, but without SIGWINCH, which makes
+		// inline Codex print its history again.
+		if (repaintUnchanged && session.proc) {
+			void tmux.refreshAttachedClient({
+				sessionName: session.tmuxSessionName,
+				pid: session.proc.pid,
+				socket: session.tmuxSocket,
+			}).catch((err) => log.warn("tmux viewer redraw failed", { error: String(err) }));
 		}
 		publishSharedSizing(session, sizer);
 		return;
@@ -2139,8 +2129,7 @@ function spawnPty(session: PtySession, cols: number, rows: number): void {
 	}
 
 	session.proc = proc;
-	// Track the geometry the PTY was spawned with so applyClientSizes can tell a
-	// real size change from a same-size resize (which needs a forced redraw).
+	// Same-size reports request a redraw; only a changed size may resize the PTY.
 	session.appliedCols = cols;
 	session.appliedRows = rows;
 
@@ -2372,14 +2361,8 @@ const ptyServer = Bun.serve({
 				const cols = 80;
 				const rows = 24;
 
-				// If no proc yet, spawn one. If proc exists, just attach
-				// the WS — the freshly-mounted ghostty-web terminal on the
-				// client is already blank, and the client's resize dance
-				// will force tmux to SIGWINCH and emit a full pane redraw
-				// via the natural PTY data path. Any explicit clear or
-				// capture-pane replay here races that redraw and causes
-				// visible flicker on every task switch; sending nothing
-				// is the clean path. See fix: task cb75af7b.
+				// Existing tmux clients redraw on the viewer's first size report.
+				// Replaying capture-pane here would race that redraw at a stale width.
 				if (session.backend === "native") {
 					// Never spawn from here: a native session's host is created by the
 					// launch path and rediscovered by reattach. A missing one means the
@@ -2408,7 +2391,7 @@ const ptyServer = Bun.serve({
 					log.info("No proc, spawning new PTY", { taskId: shortId(sessionId) });
 					spawnPty(session, cols, rows);
 				} else {
-					log.info("Reconnecting to existing PTY, tmux will redraw on resize", {
+					log.info("Reconnecting to existing PTY, tmux will redraw on size report", {
 						taskId: shortId(sessionId),
 					});
 				}

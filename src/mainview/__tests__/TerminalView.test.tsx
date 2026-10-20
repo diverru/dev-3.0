@@ -246,10 +246,15 @@ beforeEach(() => {
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
-/**
- * Render TerminalView and drive the full async setup chain:
- *   fonts.load() resolves → setup() → ResizeObserver fires → rAF → term.focus()
- */
+async function waitForInitialSocket() {
+	if (vi.isFakeTimers()) {
+		await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+		expect(lastWebSocket).not.toBeNull();
+		return;
+	}
+	await waitFor(() => expect(lastWebSocket).not.toBeNull());
+}
+
 async function renderAndSetup() {
 	let result!: ReturnType<typeof render>;
 	await act(async () => {
@@ -262,6 +267,7 @@ async function renderAndSetup() {
 	await act(async () => {
 		fireResize?.();
 	});
+	await waitForInitialSocket();
 	return result;
 }
 
@@ -673,6 +679,7 @@ describe("TerminalView – keymap shortcuts", () => {
 			await Promise.resolve();
 		});
 		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
 		const target = focusInsideTerminal();
 
 		await act(async () => {
@@ -692,6 +699,7 @@ describe("TerminalView – keymap shortcuts", () => {
 			await Promise.resolve();
 		});
 		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
 		const target = focusInsideTerminal();
 
 		const browserOwned = new KeyboardEvent("keydown", { code: "ArrowLeft", metaKey: true, altKey: true, bubbles: true, cancelable: true });
@@ -962,6 +970,7 @@ describe("TerminalView – scrolled-into-history signal (touch scroll-to-latest)
 			await Promise.resolve();
 		});
 		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
 		const wheelCalls = mockTermInstance.attachCustomWheelEventHandler.mock.calls;
 		const wheelHandler = wheelCalls[wheelCalls.length - 1]?.[0] as (event: WheelEvent) => boolean;
 		return { onScrolledIntoHistory, handle: handle!, wheelHandler };
@@ -1062,6 +1071,7 @@ describe("TerminalView – scrolled-into-history signal (touch scroll-to-latest)
 			await Promise.resolve();
 		});
 		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
 		const wheelCalls = mockTermInstance.attachCustomWheelEventHandler.mock.calls;
 		const wheelHandler = wheelCalls[wheelCalls.length - 1]?.[0] as (event: WheelEvent) => boolean;
 
@@ -1688,6 +1698,7 @@ describe("TerminalView – paste keeps brackets on a tmux stream after remount",
 			await Promise.resolve();
 		});
 		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
 		const terminal = result.container.querySelector('[data-terminal="true"]')!;
 		return { handle: handle!, terminal };
 	}
@@ -1772,6 +1783,37 @@ describe("normalizePastedText", () => {
 	it("returns plain text unchanged", () => {
 		expect(normalizePastedText("no newlines here")).toBe("no newlines here");
 	});
+});
+
+describe("TerminalView – redraw without synthetic geometry", () => {
+	it("waits for initial layout to settle before reporting its size", async () => {
+		vi.useFakeTimers();
+		try {
+			await act(async () => {
+				render(<I18nProvider><TerminalView ptyUrl="ws://localhost:1234" taskId="t1" projectId="p1" /></I18nProvider>);
+			});
+			await act(async () => { fireResize?.(); });
+			await act(async () => { vi.advanceTimersByTime(80); });
+			fitAddonHolder.current!.proposeDimensions = vi.fn(() => ({ cols: 80, rows: 37 }));
+			await act(async () => { fireResize?.(); });
+			await act(async () => { vi.advanceTimersByTime(99); });
+			expect(lastWebSocket).toBeNull();
+			await act(async () => { vi.advanceTimersByTime(1); });
+			await act(async () => { lastWebSocket!.onopen?.(new Event("open")); });
+			expect(lastWebSocket!.send.mock.calls.map(([data]) => data)).toEqual(["\x1b]resize;80;37\x07"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("reports the actual size once on socket open", async () => {
+		await renderAndSetup();
+		fitAddonHolder.current!.proposeDimensions = vi.fn(() => ({ cols: 80, rows: 24 }));
+		lastWebSocket!.send.mockClear();
+		await act(async () => { lastWebSocket!.onopen?.(new Event("open")); });
+		expect(lastWebSocket!.send.mock.calls.map(([data]) => data)).toEqual(["\x1b]resize;80;24\x07"]);
+	});
+
 });
 
 // ── buildResizeDance — pins the nudge axis (decision 041) ────────────────────
@@ -2017,6 +2059,7 @@ describe("TerminalView – native stream framing", () => {
 		await act(async () => {
 			fireResize?.();
 		});
+		await waitForInitialSocket();
 	}
 
 	function deliver(text: string) {
@@ -2186,6 +2229,7 @@ describe("TerminalView – native stream framing", () => {
 		await act(async () => {
 			fireResize?.();
 		});
+		await waitForInitialSocket();
 
 		handle!.claimWriter();
 

@@ -88,7 +88,52 @@ vi.mock("qrcode", () => ({
 import { resolve } from "node:path";
 
 import { escapesRoot } from "../remote-access-server";
+import { startRemoteAccessServer, resetRemoteAccessStartState } from "../remote-access-server";
+import { encodeResizeSequence } from "../../shared/resize-protocol";
 import { win32 } from "node:path";
+
+describe("PTY proxy initial geometry", () => {
+	it("forwards the latest early size once the upstream opens", async () => {
+		const originalServe = Bun.serve;
+		const OriginalWebSocket = globalThis.WebSocket;
+		let handlers: any;
+		let upstream: any;
+		class ConnectingSocket extends EventTarget {
+			static CONNECTING = 0;
+			static OPEN = 1;
+			readyState = 0;
+			send = vi.fn();
+			constructor(_url: string) { super(); upstream = this; }
+		}
+		try {
+			(Bun as any).serve = (options: any) => {
+				handlers = options.websocket;
+				return { port: 12345 };
+			};
+			globalThis.WebSocket = ConnectingSocket as any;
+			await startRemoteAccessServer({
+				rpcHandler: async () => ({}), getPtyPort: () => 12346,
+				registerBackpressureProbe: () => () => {},
+			});
+			const client = { data: { type: "pty", sessionId: "test" }, close: vi.fn() };
+			handlers.open(client);
+			handlers.message(client, encodeResizeSequence(80, 43));
+			handlers.message(client, encodeResizeSequence(80, 37));
+			handlers.message(client, "ordinary input");
+			expect(upstream.send).not.toHaveBeenCalled();
+			upstream.readyState = ConnectingSocket.OPEN;
+			upstream.dispatchEvent(new Event("open"));
+			expect(upstream.send.mock.calls).toEqual([[encodeResizeSequence(80, 37)]]);
+			expect(client.data).not.toHaveProperty("pendingResize");
+			handlers.message(client, encodeResizeSequence(90, 40));
+			expect(upstream.send).toHaveBeenLastCalledWith(encodeResizeSequence(90, 40));
+		} finally {
+			Bun.serve = originalServe;
+			globalThis.WebSocket = OriginalWebSocket;
+			resetRemoteAccessStartState();
+		}
+	});
+});
 
 // Exercises the REAL boundary check the server uses, not a copy of it.
 function resolveSafePath(staticRoot: string, pathname: string): string | null {

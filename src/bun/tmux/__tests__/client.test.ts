@@ -905,3 +905,24 @@ describe("missing pane cwd backstop", () => {
 		expect(spawnFn).toHaveBeenCalledTimes(3);
 	});
 });
+
+
+describe("refreshAttachedClient", () => {
+	it("redraws only the attached process on its session and socket", async () => {
+		const spawnFn = vi.fn()
+			.mockReturnValueOnce(makeProc({ stdout: "12\t/dev/ttys001\n42\t/dev/ttys002\n" }))
+			.mockReturnValueOnce(makeProc());
+		const client = new TmuxClient({ spawn: spawnFn as never });
+		await client.refreshAttachedClient({ sessionName: "dev3-task", pid: 42, socket: "custom" });
+		expect(spawnFn.mock.calls.map((_, i) => argvOf(spawnFn, i))).toEqual([
+			["tmux", "-L", "custom", "list-clients", "-t", "dev3-task", "-F", "#{client_pid}\t#{client_name}"],
+			["tmux", "-L", "custom", "refresh-client", "-t", "/dev/ttys002"],
+		]);
+	});
+
+	it("does not target another client when the process has detached", async () => {
+		const { client, spawnFn } = makeClient({ stdout: "12\t/dev/ttys001\n" });
+		await client.refreshAttachedClient({ sessionName: "dev3-task", pid: 42 });
+		expect(spawnFn).toHaveBeenCalledTimes(1);
+	});
+});

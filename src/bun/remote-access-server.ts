@@ -19,6 +19,7 @@ import QRCode from "qrcode";
 import type { RemoteAccessStartFailure, RemoteAccessStatus, RemoteNetInterface } from "../shared/types";
 import { NATIVE_STREAM_SINCE_PARAM, parseSinceParam } from "../shared/native-terminal-stream";
 import { remoteStaticCodeError } from "../shared/remote-static-code";
+import { encodeResizeSequence, isResizeSequence, parseResizeSequence } from "../shared/resize-protocol";
 import { authAttemptRetryAfterS, recordAuthFailure, clearAuthFailures } from "./remote-auth-rate-limit";
 import { PATHS } from "./electrobun-platform";
 import { createLogger } from "./logger";
@@ -413,6 +414,11 @@ function proxyToPty(clientWs: any, sessionId: string, sinceSeq: number | null): 
 
 	upstream.addEventListener("open", () => {
 		log.info("PTY proxy upstream connected", { session: sessionId.slice(0, 8) });
+		const data = clientWs.data as WsData;
+		if (data.pendingResize !== undefined) {
+			upstream.send(data.pendingResize);
+			delete data.pendingResize;
+		}
 	});
 
 	upstream.addEventListener("message", (event) => {
@@ -514,6 +520,7 @@ async function handleRpcMessage(ws: any, raw: string | ArrayBuffer): Promise<voi
 interface WsData {
 	type: "rpc" | "pty" | "shared-proxy";
 	sessionId?: string;
+	pendingResize?: string;
 	/** Native viewer's resume watermark, forwarded to the PTY server. */
 	sinceSeq?: number | null;
 	/** For `shared-proxy`: the upstream `ws://localhost:<port>/<path>` URL to dial. */
@@ -851,7 +858,7 @@ export async function startRemoteAccessServer(options: StartOptions): Promise<vo
 				}
 			},
 			message(ws, raw) {
-				const wsData = (ws as any).data as { type: string };
+				const wsData = (ws as any).data as WsData;
 				if (wsData.type === "rpc") {
 					handleRpcMessage(ws, raw as string).catch(err => {
 						log.error("RPC message handler error", { error: String(err) });
@@ -859,9 +866,13 @@ export async function startRemoteAccessServer(options: StartOptions): Promise<vo
 				} else if (wsData.type === "pty") {
 					// Forward client input to PTY upstream
 					const upstream = (ws as any)._ptyUpstream as WebSocket | undefined;
+					const data = typeof raw === "string" ? raw : new TextDecoder().decode(raw as unknown as ArrayBuffer);
 					if (upstream?.readyState === WebSocket.OPEN) {
-						const data = typeof raw === "string" ? raw : new TextDecoder().decode(raw as unknown as ArrayBuffer);
 						upstream.send(data);
+					} else if (upstream?.readyState === WebSocket.CONNECTING && isResizeSequence(data)) {
+						// The browser can report its size before the localhost hop opens.
+						const size = parseResizeSequence(data);
+						if (size) wsData.pendingResize = encodeResizeSequence(size.cols, size.rows);
 					}
 				} else if (wsData.type === "shared-proxy") {
 					const upstream = (ws as any)._proxyUpstream as WebSocket | undefined;

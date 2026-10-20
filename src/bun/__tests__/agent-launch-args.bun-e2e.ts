@@ -41,6 +41,8 @@ import { join } from "node:path";
 import { spawn } from "../spawn";
 import { CLAUDE_SKILL_BODY } from "../../shared/agent-skill-content";
 import { commandToken, shellEscape } from "../../shared/agent-adapters/shell";
+import { codexAdapter } from "../../shared/agent-adapters/codex";
+import type { AdapterLaunchOptions } from "../../shared/agent-adapters/types";
 import { AGENT_SKILL_BODY_LIMIT, WINDOWS_COMMAND_LINE_LIMIT } from "../../shared/agent-command-line-budget";
 import { buildCmdScript, generatedScriptLaunch, generatedScriptName, writeLaunchScript } from "../rpc-handlers/shared-pure";
 
@@ -128,8 +130,12 @@ const KNOWN_WINDOWS_LIMITS: Array<[name: string, value: string]> = [
  * it would hang this run.
  */
 async function runAgent(binary: string, values: string[]): Promise<{ code: number; output: string }> {
-	rmSync(RECORD, { force: true });
 	const command = [commandToken(binary), shellEscape(PROBE), ...values.map(shellEscape)].join(" ");
+	return runCommand(command);
+}
+
+async function runCommand(command: string): Promise<{ code: number; output: string }> {
+	rmSync(RECORD, { force: true });
 	const scriptPath = join(root, generatedScriptName("run"));
 	await writeLaunchScript(scriptPath, buildCmdScript(command));
 	const launch = generatedScriptLaunch(scriptPath);
@@ -165,6 +171,35 @@ function brief(value: string): string {
 console.log(`agent command line on ${process.platform} (${process.execPath})`);
 
 try {
+	console.log("\nCodex startup — a fake binary receives the update-menu override");
+	{
+		const fakeCodex = `${commandToken(process.execPath)} ${shellEscape(PROBE)}`;
+		const ctx = { taskTitle: "T", taskDescription: "Fix the bug", projectName: "P", projectPath: root, worktreePath: root };
+		const cases: Array<[string, string, AdapterLaunchOptions]> = [
+			["fresh", "Fix the bug", {}],
+			["scratch", "", {}],
+			["resume", "", { resume: true, sessionId: "exact-session" }],
+			["without protocol", "", { skipSystemPrompt: true }],
+		];
+		const commands = cases.map(([name, taskDescription, options]) => [name, codexAdapter.launchArgs(
+			fakeCodex,
+			{ id: "c", name: "C", additionalArgs: ["-c", "check_for_update_on_startup=true"] },
+			{ ...ctx, taskDescription },
+			options,
+		).join(" ")] as const);
+		commands.push(["recovery", codexAdapter.buildResumeCommand(fakeCodex, "exact-session")!]);
+		for (const [name, command] of commands) {
+			const { code } = await runCommand(command);
+			const args = received();
+			const flags = args?.slice(0, args.includes("--") ? args.indexOf("--") : args.length);
+			const overrides = flags?.filter((arg, i) => flags[i - 1] === "-c" && arg.startsWith("check_for_update_on_startup="));
+			check(code === 0 && overrides?.[overrides.length - 1] === "check_for_update_on_startup=false", `${name}: update menu disabled after preset overrides`);
+			if (name === "resume" || name === "recovery") {
+				check(args?.[0] === "resume" && args[1] === "exact-session", `${name}: exact conversation preserved`);
+			}
+		}
+	}
+
 	console.log("\nper-argument — each value arrives at the binary byte-identical");
 	for (const [name, value] of CASES) {
 		const { code, output } = await runAgent(process.execPath, [value]);

@@ -262,7 +262,7 @@ describe("buildResumeCommand", () => {
 		[claudeAdapter, "claude", undefined, "claude --continue"],
 		[claudeAdapter, "claude", "sid", "claude --resume sid"],
 		[codexAdapter, "codex", undefined, null],
-		[codexAdapter, "codex", "sid", "codex resume sid"],
+		[codexAdapter, "codex", "sid", "codex resume sid -c check_for_update_on_startup=false"],
 		[geminiAdapter, "gemini", undefined, "gemini --resume latest"],
 		[geminiAdapter, "gemini", "sid", "gemini --resume sid"],
 		[cursorAdapter, "agent", undefined, "agent --continue"],
@@ -336,13 +336,13 @@ describe("launchArgs — Claude", () => {
 describe("launchArgs — Codex", () => {
 	it("theme + developer_instructions + resume subcommand", () => {
 		expect(launch("codex", cfg({ model: "gpt-5.6-sol" }), { codex: CODEX_RT }))
-			.toBe("codex --model gpt-5.6-sol -c 'default_permissions=\"dev3\"' --profile dev3-dark -c 'tui.theme=\"dracula\"' -c <CODEX_DEV_INSTR> -- 'Fix the login bug'");
+			.toBe("codex --model gpt-5.6-sol -c 'default_permissions=\"dev3\"' --profile dev3-dark -c 'tui.theme=\"dracula\"' -c check_for_update_on_startup=false -c <CODEX_DEV_INSTR> -- 'Fix the login bug'");
 		expect(launch("codex", cfg({ model: "gpt-5.6-sol" }), { resume: true, sessionId: "sid", codex: CODEX_RT }))
-			.toBe("codex resume sid --model gpt-5.6-sol -c 'default_permissions=\"dev3\"' --profile dev3-dark -c 'tui.theme=\"dracula\"' -c <CODEX_DEV_INSTR>");
+			.toBe("codex resume sid --model gpt-5.6-sol -c 'default_permissions=\"dev3\"' --profile dev3-dark -c 'tui.theme=\"dracula\"' -c check_for_update_on_startup=false -c <CODEX_DEV_INSTR>");
 	});
 	it("rewrites a dev3 profile to the themed profile", () => {
 		expect(launch("codex", cfg({ model: "gpt-5.6-sol", additionalArgs: ["-p", "dev3"] }), { codex: CODEX_RT }))
-			.toBe("codex --model gpt-5.6-sol -p dev3-dark -c 'default_permissions=\"dev3\"' -c 'tui.theme=\"dracula\"' -c <CODEX_DEV_INSTR> -- 'Fix the login bug'");
+			.toBe("codex --model gpt-5.6-sol -p dev3-dark -c 'default_permissions=\"dev3\"' -c 'tui.theme=\"dracula\"' -c check_for_update_on_startup=false -c <CODEX_DEV_INSTR> -- 'Fix the login bug'");
 	});
 
 	// A preset built by hand carries no flags at all. Codex's own default

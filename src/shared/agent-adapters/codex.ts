@@ -57,6 +57,7 @@ function applyCodexTheme(args: string[], codex: CodexLaunchRuntime | undefined):
  *  opens `~/.dev3.0` and the skill dirs. Codex's own default (`workspace`) does
  *  not, so an agent launched without it cannot reach the dev3 CLI at all. */
 const DEV3_PERMISSIONS = 'default_permissions="dev3"';
+const UPDATE_CHECK_OVERRIDE = "check_for_update_on_startup=false";
 
 /** Flags that already decide permissions — leave a launch that carries one of
  *  them alone, including a deliberately sandboxed or fully bypassed run.
@@ -153,6 +154,8 @@ export const codexAdapter: AgentAdapter = {
 
 		applyDev3Permissions(args);
 		applyCodexTheme(args, options?.codex);
+		// The startup update menu would consume the Enter from dev3's launch handoff.
+		args.push("-c", UPDATE_CHECK_OVERRIDE);
 
 		// No --append-system-prompt; deliver the dev3 protocol as a developer-role
 		// message via `-c developer_instructions=...` (additive, covers scratch and
@@ -177,7 +180,7 @@ export const codexAdapter: AgentAdapter = {
 	},
 
 	buildResumeCommand(baseCmd, sessionId) {
-		return sessionId ? `${baseCmd} resume ${sessionId}` : null;
+		return sessionId ? `${baseCmd} resume ${sessionId} -c ${UPDATE_CHECK_OVERRIDE}` : null;
 	},
 
 	hooksSpec() {

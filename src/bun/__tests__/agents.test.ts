@@ -844,7 +844,7 @@ describe("buildResumeCommand", () => {
 	});
 
 	it("Codex: resume <id> with sessionId", () => {
-		expect(buildResumeCommand("codex", "sid-2")).toBe("codex resume sid-2");
+		expect(buildResumeCommand("codex", "sid-2")).toBe("codex resume sid-2 -c check_for_update_on_startup=false");
 	});
 
 	it("Codex: no resume command without sessionId (never --last)", () => {

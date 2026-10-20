@@ -166,7 +166,7 @@ describe("cli-socket — Codex per-pane session capture (e2e, real data)", () =>
 
 		// The persisted id drives a targeted resume, exactly as resumeTask does.
 		expect(buildResumeCommand("codex", panes[1]!.sessionId ?? undefined))
-			.toBe("codex resume 00000000-0000-4000-8000-0000c0de2704");
+			.toBe("codex resume 00000000-0000-4000-8000-0000c0de2704 -c check_for_update_on_startup=false");
 	});
 
 	it("adopts the lone null-paneId (main) pane when no stored paneId matches", async () => {
@@ -359,7 +359,7 @@ describe("cli-socket — Codex per-pane session capture (e2e, real data)", () =>
 		expect(panes[0]).toMatchObject({ paneId: "%6", sessionId: "00000000-0000-4000-8000-0000c0de1083", agentId: "builtin-codex", configId: "codex-default", agentCmd: "codex" });
 		// No account is guessed: resume finds the store that holds the conversation.
 		expect(panes[0]?.accountId).toBeUndefined();
-		expect(buildResumeCommand(panes[0]!.agentCmd, panes[0]!.sessionId ?? undefined)).toBe("codex resume 00000000-0000-4000-8000-0000c0de1083");
+		expect(buildResumeCommand(panes[0]!.agentCmd, panes[0]!.sessionId ?? undefined)).toBe("codex resume 00000000-0000-4000-8000-0000c0de1083 -c check_for_update_on_startup=false");
 	});
 
 	it.each([

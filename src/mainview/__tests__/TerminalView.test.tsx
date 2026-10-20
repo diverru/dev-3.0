@@ -1022,6 +1022,33 @@ describe("TerminalView – scrolled-into-history signal (touch scroll-to-latest)
 		expect(mockedExitCopyModeAllPanes.mock.invocationCallOrder[0]).toBeLessThan(mockPaste.mock.invocationCallOrder[0]);
 	});
 
+	it.each(["extra-key", "clipboard", "ime"] as const)("%s input resumes after copy-mode exits", async (source) => {
+		mockTermInstance.open.mockImplementationOnce((el: HTMLElement) => el.appendChild(document.createElement("textarea")));
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		const { handle, wheelHandler } = await renderWithSignal();
+		act(() => { wheelHandler({ deltaY: -100, clientX: 20, clientY: 20 } as WheelEvent); });
+		let release!: () => void;
+		mockedExitCopyModeAllPanes.mockClear();
+		mockedExitCopyModeAllPanes.mockReturnValueOnce(new Promise((resolve) => {
+			release = () => resolve({ panesExited: 1 });
+		}));
+		lastWebSocket!.send.mockClear();
+		mockPaste.mockClear();
+		act(() => {
+			if (source === "extra-key") handle.sendInput("x");
+			else if (source === "clipboard") dispatchPaste(document.querySelector('[data-terminal="true"]')!, "x");
+			else document.querySelector('[data-terminal="true"] textarea')!.dispatchEvent(
+				new InputEvent("beforeinput", { inputType: "insertText", data: "x", bubbles: true, cancelable: true }),
+			);
+		});
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledTimes(1);
+		expect(lastWebSocket!.send).not.toHaveBeenCalled();
+		expect(mockPaste).not.toHaveBeenCalled();
+		await act(async () => { release(); });
+		if (source === "clipboard") expect(mockPaste).toHaveBeenCalledWith("x");
+		else expect(lastWebSocket!.send).toHaveBeenCalledWith("x");
+	});
+
 	it("without a pending scroll-up, paste stays synchronous and never calls tmux", async () => {
 		const { handle } = await renderWithSignal();
 		mockedExitCopyModeAllPanes.mockClear();
@@ -1169,6 +1196,62 @@ describe("TerminalView – hidden textarea keeps focus only when nothing else ta
 });
 
 describe("TerminalView – tmux copy-mode focus recovery", () => {
+	it("waits for copy-mode exit before forwarding the first keys, in order", async () => {
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		await renderAndSetup();
+		act(() => { lastWebSocket!.onmessage!({ data: "$ " } as MessageEvent); });
+		const wheel = mockTermInstance.attachCustomWheelEventHandler.mock.lastCall![0] as (e: WheelEvent) => boolean;
+		act(() => { wheel({ deltaY: -100, clientX: 20, clientY: 20 } as WheelEvent); });
+		let release!: () => void;
+		mockedExitCopyModeAllPanes.mockClear();
+		mockedExitCopyModeAllPanes.mockReturnValueOnce(new Promise((resolve) => {
+			release = () => resolve({ panesExited: 1 });
+		}));
+		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
+		const data = (mockTermInstance.onData.mock.lastCall as unknown as [(s: string) => void])[0];
+		lastWebSocket!.send.mockClear();
+		act(() => {
+			key(new KeyboardEvent("keydown", { key: "a", code: "KeyA" }));
+			data("a");
+			key(new KeyboardEvent("keydown", { key: "b", code: "KeyB" }));
+			data("b");
+		});
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledTimes(1);
+		expect(lastWebSocket!.send).not.toHaveBeenCalled();
+		await act(async () => { release(); });
+		expect(lastWebSocket!.send.mock.calls.map(([s]) => s)).toEqual(["a", "b"]);
+	});
+
+	it("resumes inherited copy mode on the first key after a terminal remount", async () => {
+		await renderAndSetup();
+		act(() => { lastWebSocket!.onmessage!({ data: "retained tmux viewport" } as MessageEvent); });
+		mockedExitCopyModeAllPanes.mockClear();
+		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
+		act(() => { key(new KeyboardEvent("keydown", { key: "a", code: "KeyA" })); });
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledWith({ taskId: "t1" });
+	});
+
+	it("keeps history for mouse reports, terminal replies and copy modifier keys", async () => {
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		await renderAndSetup();
+		act(() => { lastWebSocket!.onmessage!({ data: "$ " } as MessageEvent); });
+		const wheel = mockTermInstance.attachCustomWheelEventHandler.mock.lastCall![0] as (e: WheelEvent) => boolean;
+		act(() => { wheel({ deltaY: -100, clientX: 20, clientY: 20 } as WheelEvent); });
+		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
+		const data = (mockTermInstance.onData.mock.lastCall as unknown as [(s: string) => void])[0];
+		mockedExitCopyModeAllPanes.mockClear();
+		lastWebSocket!.send.mockClear();
+		act(() => {
+			for (const modifier of ["Shift", "Meta", "Control", "Alt"]) key(new KeyboardEvent("keydown", { key: modifier }));
+			key(new KeyboardEvent("keydown", { key: "c", code: "KeyC", metaKey: true }));
+			key(new KeyboardEvent("keydown", { key: "C", code: "KeyC", ctrlKey: true, shiftKey: true }));
+			data("\x1b[<32;4;2M");
+			data("\x1b[1;1R");
+		});
+		expect(mockedExitCopyModeAllPanes).not.toHaveBeenCalled();
+		expect(lastWebSocket!.send.mock.calls.map(([s]) => s)).toEqual(["\x1b[<32;4;2M", "\x1b[1;1R"]);
+	});
+
 	afterEach(() => {
 		mockTermInstance.hasMouseTracking.mockReturnValue(false);
 	});
@@ -1721,7 +1804,7 @@ describe("TerminalView – paste keeps brackets on a tmux stream after remount",
 	it("a clipboard paste on a tmux stream goes out bracketed although ghostty lost 2004", async () => {
 		const { terminal } = await renderWithHandle();
 		deliver("tmux redraw");
-		dispatchPaste(terminal, "a\nb");
+		await act(async () => { dispatchPaste(terminal, "a\nb"); });
 		expect(mockInput).toHaveBeenCalledWith(BRACKETED, true);
 		expect(mockPaste).not.toHaveBeenCalled();
 	});
@@ -1729,8 +1812,8 @@ describe("TerminalView – paste keeps brackets on a tmux stream after remount",
 	it("the imperative paste and submit take the same bracketed path, with one immediate Enter", async () => {
 		const { handle } = await renderWithHandle();
 		deliver("tmux redraw");
+		await act(async () => { handle.paste("a\rb"); });
 		vi.useFakeTimers();
-		handle.paste("a\rb");
 		expect(mockInput).toHaveBeenLastCalledWith(BRACKETED, true);
 		const ws = lastWebSocket!;
 		ws.send.mockClear();
@@ -1746,7 +1829,7 @@ describe("TerminalView – paste keeps brackets on a tmux stream after remount",
 		const { terminal } = await renderWithHandle();
 		deliver("tmux redraw");
 		mockTermInstance.hasBracketedPaste.mockReturnValue(true);
-		dispatchPaste(terminal, "a\nb");
+		await act(async () => { dispatchPaste(terminal, "a\nb"); });
 		expect(mockPaste).toHaveBeenCalledWith("a\rb");
 		expect(mockInput).not.toHaveBeenCalled();
 	});

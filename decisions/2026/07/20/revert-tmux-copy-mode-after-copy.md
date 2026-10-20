@@ -1,5 +1,7 @@
 # 145 — Revert keeping tmux copy-mode after mouse copy
 
+Superseded for mouse-copy bindings on 2026-10-20 by `decisions/2026/10/20/keep-terminal-history-position-after-copy.md`: retain the viewport and explicitly resume live input before typing or pasting. Clipboard fallbacks remain unchanged.
+
 ## Context
 
 Decision 139 (PR #991, issue #978) overrode `MouseDragEnd1Pane` in both tmux copy-mode tables with `send-keys -X copy-selection` so a mouse-drag copy of scrollback kept the viewport in place instead of jumping to live output. In practice this made copy-mode sticky: after any mouse copy the pane stayed in tmux scroll mode, so clicks landed as copy-mode gestures (cursor jumping to random cells) and the user had to press Escape constantly — especially disruptive in Codex sessions.

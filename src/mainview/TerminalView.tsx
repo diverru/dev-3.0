@@ -420,6 +420,13 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 		copyModeExitRef.current = pending;
 		return pending;
 	}, [setScrolledIntoHistory, taskId]);
+	const sendUserInput = useCallback((data: string) => {
+		const send = () => {
+			if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data);
+		};
+		if (copyModePending()) void exitCopyModeIfNeeded().then(send);
+		else send();
+	}, [copyModePending, exitCopyModeIfNeeded]);
 	const mouseGestureDraggedRef = useRef(false);
 	const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">(
 		() => (document.documentElement.dataset.theme as "dark" | "light") || "dark",
@@ -1016,16 +1023,12 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 							// Direct input: space, digits, punctuation.
 							// Send immediately and prevent insertion into textarea
 							// so it doesn't desync with composition tracking.
-							if (wsRef.current?.readyState === WebSocket.OPEN) {
-								wsRef.current.send(ie.data);
-							}
+							sendUserInput(ie.data);
 							e.preventDefault();
 							return;
 						}
 						if (ie.inputType === "deleteContentBackward" && hiddenTextarea.value === "") {
-							if (wsRef.current?.readyState === WebSocket.OPEN) {
-								wsRef.current.send("\x7f");
-							}
+							sendUserInput("\x7f");
 							e.preventDefault();
 						}
 					});
@@ -1038,15 +1041,11 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 						const val = hiddenTextarea.value;
 						if (val.length > lastSentLen) {
 							const newChars = val.slice(lastSentLen);
-							if (wsRef.current?.readyState === WebSocket.OPEN) {
-								wsRef.current.send(newChars);
-							}
+							sendUserInput(newChars);
 						} else if (val.length < lastSentLen) {
 							const deleted = lastSentLen - val.length;
 							for (let i = 0; i < deleted; i++) {
-								if (wsRef.current?.readyState === WebSocket.OPEN) {
-									wsRef.current.send("\x7f");
-								}
+								sendUserInput("\x7f");
 							}
 						}
 						lastSentLen = val.length;
@@ -1348,6 +1347,11 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 							// Replace sequences ghostty-web encodes wrongly or unhelpfully
 							// (see terminal-key-overrides.ts); onData keeps the latency probe fed.
 							term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+								if (tmuxStreamRef.current && copyModePending() && !event.metaKey &&
+									!["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key) &&
+									!(event.ctrlKey && event.shiftKey && event.code === "KeyC")) {
+									void exitCopyModeIfNeeded();
+								}
 								const seq = getTerminalKeyOverride(event, tmuxStreamRef.current);
 								if (!seq) return false;
 								const hex = Array.from(seq, c => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
@@ -1396,9 +1400,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 								},
 								sendInput: (data: string) => {
 									noteViewerActivity();
-									if (wsRef.current?.readyState === WebSocket.OPEN) {
-										wsRef.current.send(data);
-									}
+									sendUserInput(data);
 								},
 								// Bracketed per pasteIntoTerminal(), routed through onData → WS.
 								// Text typed while the pane sits in tmux copy-mode would be eaten as
@@ -1941,6 +1943,12 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 			if (reset || cleaned) writeToTerminal(reset + cleaned, true);
 		}
 
+		function noteTmuxStream() {
+			// A remount can inherit copy-mode without a local wheel/drag gesture.
+			if (!tmuxStreamRef.current) tmuxCopyModeMayBeActiveRef.current = true;
+			tmuxStreamRef.current = true;
+		}
+
 		function connectPty(term: Terminal, fit: FitAddon) {
 			if (disposed || ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
 			if (reconnectTimer !== null) {
@@ -2015,7 +2023,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 							handleNativeFrame(native.header, native.payload);
 							return;
 						}
-						tmuxStreamRef.current = true;
+						noteTmuxStream();
 						const cleaned = event.data.replace(OSC52_RE, "");
 						if (cleaned) {
 							noteSocketBytes(cleaned.length);
@@ -2024,7 +2032,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 						}
 					} else {
 						// Binary data — decode, then write on the same path as text
-						tmuxStreamRef.current = true;
+						noteTmuxStream();
 						const str = new TextDecoder().decode(new Uint8Array(event.data));
 						if (str) {
 							noteSocketBytes(str.length);
@@ -2084,11 +2092,14 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 
 			if (!terminalInputBound) termSubs.push(
 				term.onData((data) => {
-					if (disposed) return;
-					if (ws?.readyState === WebSocket.OPEN) {
+					const send = () => {
+						if (disposed || ws?.readyState !== WebSocket.OPEN) return;
 						latency.noteInput(data);
 						ws.send(data);
-					}
+					};
+					// Only a key/paste starts cancellation; replies and mouse reports keep history.
+					if (copyModeExitRef.current) void copyModeExitRef.current.then(send);
+					else send();
 				}),
 				term.onResize(({ cols, rows }) => {
 					if (disposed) return;
@@ -2285,6 +2296,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 			frame = requestAnimationFrame(sync);
 		};
 		const onWindowFocus = () => {
+			if (tmuxStreamRef.current) tmuxCopyModeMayBeActiveRef.current = true;
 			windowFocusedRef.current = true;
 			sync();
 		};
@@ -2319,15 +2331,19 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 			if (e.key.length !== 1) return;
 			const term = termRef.current;
 			if (!term) return;
-			try {
-				term.focus();
-				term.input(e.key, true);
-			} catch { return; /* disposed */ }
+			const type = () => {
+				try {
+					term.focus();
+					term.input(e.key, true);
+				} catch { /* disposed */ }
+			};
+			if (copyModePending()) void exitCopyModeIfNeeded().then(type);
+			else type();
 			e.preventDefault();
 		}
 		document.addEventListener("keydown", handleKeydown);
 		return () => document.removeEventListener("keydown", handleKeydown);
-	}, []);
+	}, [copyModePending, exitCopyModeIfNeeded]);
 
 	useEffect(() => {
 		function handleTerminalCopyShortcut(e: KeyboardEvent) {
@@ -2575,7 +2591,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 		function sendPathToPty(path: string) {
 			if (wsRef.current?.readyState === WebSocket.OPEN) {
 				const escaped = path.replace(/ /g, "\\ ");
-				wsRef.current.send(escaped);
+				sendUserInput(escaped);
 			}
 			try { termRef.current?.focus(); } catch { /* disposed */ }
 		}
@@ -2661,16 +2677,17 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 			if (!term) return;
 			e.preventDefault();
 			e.stopImmediatePropagation();
-			try {
-				pasteIntoTerminal(term, normalizePastedText(text), tmuxStreamRef.current);
-			} catch {
-				// Terminal disposed mid-paste — nothing to do.
-			}
+			const paste = () => {
+				try { pasteIntoTerminal(term, normalizePastedText(text), tmuxStreamRef.current); }
+				catch { /* disposed mid-paste */ }
+			};
+			if (copyModePending()) void exitCopyModeIfNeeded().then(paste);
+			else paste();
 		}
 
 		container.addEventListener("paste", onPaste, { capture: true });
 		return () => container.removeEventListener("paste", onPaste, { capture: true });
-	}, [projectId, taskId, t]);
+	}, [projectId, taskId, t, copyModePending, exitCopyModeIfNeeded, sendUserInput]);
 
 	function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
 		e.preventDefault();
@@ -2706,7 +2723,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 		if (wsRef.current?.readyState === WebSocket.OPEN) {
 			const cursor = termRef.current?.buffer?.active;
 			const line = cursor?.getLine?.((cursor.baseY ?? 0) + (cursor.cursorY ?? 0));
-			wsRef.current.send(spaceDroppedPaths(text, line, cursor?.cursorX ?? 0));
+			sendUserInput(spaceDroppedPaths(text, line, cursor?.cursorX ?? 0));
 		}
 		try { termRef.current?.focus(); } catch { /* disposed */ }
 	}

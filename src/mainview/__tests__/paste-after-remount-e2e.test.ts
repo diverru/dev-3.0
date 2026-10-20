@@ -314,6 +314,61 @@ describe.skipIf(!tmuxAvailable || !python3Available)(
 			}
 		}, 10_000);
 
+		it("mouse copies preserve the history viewport and cancel restores typing and paste", async () => {
+			const tmux = (...args: string[]) => {
+				const result = cpSpawnSync("tmux", ["-L", tmuxSocket, ...args], { env: isolatedTmuxEnv(), encoding: "utf8" });
+				expect(result.status, result.stderr).toBe(0);
+				return result.stdout.trim();
+			};
+			const bindings = readFileSync(resolve("src/bun/tmux/config.ts"), "utf8").split("\n")
+				.filter((line) => /^bind -T copy-mode(?:-vi)? MouseDragEnd1Pane /.test(line));
+			expect(bindings).toHaveLength(2);
+			const config = join(tmpDir, "mouse-copy.conf");
+			writeFileSync(config, ["set -s set-clipboard on", ...bindings].join("\n"));
+			tmux("source-file", config);
+			const capture = join(tmpDir, "input-after-copy");
+			const worker = join(tmpDir, "copy-worker.py");
+			writeFileSync(capture, "");
+			writeFileSync(worker, [
+				"import os, tty",
+				"print('\\x1b[?2004h', end='')",
+				"for i in range(200): print('copy-history-line-' + str(i))",
+				"print('READY-COPY-200', flush=True)",
+				"tty.setraw(0)",
+				"while True:",
+				"    data = os.read(0, 4096)",
+				`    with open(${JSON.stringify(capture)}, 'ab') as out: out.write(data)`,
+			].join("\n"));
+			tmux("respawn-pane", "-t", `${tmuxSession}:1.1`, "-k", `python3 -u ${worker}`);
+			await expect.poll(() => tmux("capture-pane", "-p", "-t", tmuxSession)).toContain("READY-COPY-200");
+			try {
+				let row = 2;
+				tmux("set-window-option", "-t", tmuxSession, "mode-keys", "emacs");
+				tmux("copy-mode", "-u", "-t", tmuxSession);
+				const position = tmux("display-message", "-p", "-t", tmuxSession, "#{scroll_position}");
+				expect(Number(position)).toBeGreaterThan(0);
+				for (const start of [1, 3]) {
+					row += 3;
+					const line = tmux("capture-pane", "-p", "-M", "-t", tmuxSession).split("\n")[row - 1];
+					const end = start + 7;
+					const offset = bridgeStderr.length;
+					bridge!.stdin!.write(`\x1b[<0;${start};${row}M\x1b[<32;${end};${row}M\x1b[<0;${end};${row}m`, "utf8");
+					await expect.poll(() => {
+						const match = /\x1b\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)/.exec(bridgeStderr.slice(offset));
+						return match ? Buffer.from(match[1], "base64").toString("utf8") : null;
+					}).toBe(line.slice(start - 1, end - 1));
+					expect(tmux("display-message", "-p", "-t", tmuxSession, "#{pane_in_mode}")).toBe("1");
+					expect(tmux("display-message", "-p", "-t", tmuxSession, "#{scroll_position}")).toBe(position);
+				}
+				tmux("send-keys", "-t", tmuxSession, "-X", "cancel");
+				expect(tmux("display-message", "-p", "-t", tmuxSession, "#{pane_in_mode}")).toBe("0");
+				bridge!.stdin!.write(`typed:${PASTE_START}pasted${PASTE_END}`, "utf8");
+				await expect.poll(() => readFileSync(capture, "utf8")).toBe(`typed:${PASTE_START}pasted${PASTE_END}`);
+			} finally {
+				cpSpawnSync("tmux", ["-L", tmuxSocket, "send-keys", "-t", tmuxSession, "-X", "cancel"], { env: isolatedTmuxEnv() });
+			}
+		}, 10_000);
+
 		it("an intact Terminal still pastes through ghostty, wrapped exactly once", async () => {
 			const { term, sent, write } = openTerminal();
 			await write("\x1b[?2004h");

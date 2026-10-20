@@ -178,11 +178,10 @@ set -g pane-border-lines double
 # Clipboard support
 set -s set-clipboard on
 
-# Explicitly pin the default mouse-copy binding. Merely deleting a bind line
-# does not unbind it on an already-running server (configs are re-sourced by
-# configureTmux), so the reverted #991 copy-selection binding would stick.
-bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
-bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
+# Copy through OSC 52 without leaving the history viewport.
+# Explicit bindings also replace old copy-and-cancel on running servers.
+bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe
+bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe
 
 # Bell pass-through
 set -g visual-bell off

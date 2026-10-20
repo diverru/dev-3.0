@@ -1,5 +1,7 @@
 # 146 — Insecure-context clipboard fallback + stale tmux bindings need explicit pins
 
+Superseded for mouse-copy bindings on 2026-10-20 by `decisions/2026/10/20/keep-terminal-history-position-after-copy.md`: retain the viewport and explicitly resume live input before typing or pasting. Clipboard fallbacks remain unchanged.
+
 ## Context
 
 After the #991 revert shipped (#1013), a user reported terminal copy "stopped working" in Chrome remote mode. Live logs showed two independent facts: (1) the renderer logged `navigator.clipboard.writeText unavailable` — the session ran over plain http (`ip: direct`), where browsers hide the async clipboard API entirely, while the pre-restart session went through the https tunnel and wrote the clipboard fine; (2) the running tmux server (started days earlier) still had the reverted `copy-selection` bindings — deleting a `bind` line from the config does not unbind anything on a live server, so the revert was inert there.

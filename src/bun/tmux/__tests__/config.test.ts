@@ -102,15 +102,15 @@ describe("buildThemeConfig", () => {
 		expect(buildThemeConfig("mocha")).toContain("history-limit 250000");
 	});
 
-	it("pins mouse copies to the default copy-pipe-and-cancel binding", () => {
+	it("copies mouse selections without cancelling the history viewport", () => {
 		const config = buildThemeConfig("mocha");
 		expect(config).toContain(
-			"bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel",
+			"bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe",
 		);
 		expect(config).toContain(
-			"bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel",
+			"bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe",
 		);
-		expect(config).not.toContain("MouseDragEnd1Pane send-keys -X copy-selection");
+		expect(config).not.toContain("MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel");
 	});
 
 	it("puts prefix-free pane navigation on Alt+Shift+arrow and frees plain Alt+arrow", () => {

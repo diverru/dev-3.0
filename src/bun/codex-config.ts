@@ -1,11 +1,15 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { load } from "js-toml";
 import { buildCodexHooks, AGENT_STATUS_HOOK_EVENTS, mentionsDev3Cli } from "../shared/agent-hooks";
 import { type CliVersion, isCliVersionAtLeast, parseCliVersion } from "../shared/agent-model-cli-requirements";
 import type { HookCliDialect } from "../shared/dev3-cli-path";
 import { createLogger } from "./logger";
 import { spawn } from "./spawn";
+import { agentBinaryPathOverride } from "./executable";
+import { resolveBinaryPath } from "./rpc-handlers/shared-pure";
+import { loadSettings } from "./settings";
 import { DEV3_CODEX_DARK_PROFILE, DEV3_CODEX_LIGHT_PROFILE } from "./theme-state";
 
 const log = createLogger("codex-config");
@@ -61,6 +65,12 @@ interface CodexConfigOptions {
 	 * on. Production leaves it unset and gets the host's dialect.
 	 */
 	dialect?: HookCliDialect;
+	/**
+	 * Read roots of the Codex installation (see `codexInstallReadRoots`). When
+	 * set, dev3-managed `# dev3: codex install` lines in the dev3 filesystem
+	 * profile are reconciled to exactly this set. Unset leaves them untouched.
+	 */
+	codexInstallRoots?: string[];
 }
 
 type CodexVersion = CliVersion;
@@ -167,6 +177,73 @@ function dev3FilesystemLines(userHome: string, dev3Home: string): string[] {
 		`${tomlBasicString(joinLike(userHome, ".agents", "skills"))} = "read"`,
 		`${tomlBasicString(dev3Home)} = "write"`,
 	];
+}
+
+const CODEX_INSTALL_MARKER = "# dev3: codex install";
+
+function codexInstallLine(root: string): string {
+	return `${tomlBasicString(root)} = "read" ${CODEX_INSTALL_MARKER}`;
+}
+
+/**
+ * Directories the dev3 profile must read so Codex's sandbox helper can exec its
+ * own launcher: the launcher's dir and the install its symlink chain lands in.
+ */
+export function codexInstallReadRoots(launcherPath: string): string[] {
+	try {
+		const hops: string[] = [];
+		let current = launcherPath;
+		for (let i = 0; i < 16 && lstatSync(current).isSymbolicLink(); i++) {
+			current = resolve(dirname(current), readlinkSync(current));
+			hops.push(current);
+		}
+		if (hops.length === 0) return guardInstallRoots([dirname(launcherPath)]);
+		hops.push(realpathSync(launcherPath));
+		const dirs = hops.map((hop) => {
+			const dir = dirname(hop);
+			return basename(dir) === "bin" ? dirname(dir) : dir;
+		});
+		const segments = dirs.map((dir) => dir.split("/"));
+		const common: string[] = [];
+		for (let i = 0; segments.every((seg) => i < seg.length && seg[i] === segments[0][i]); i++) {
+			common.push(segments[0][i]);
+		}
+		return guardInstallRoots([dirname(launcherPath), common.join("/")]);
+	} catch {
+		return [];
+	}
+}
+
+function guardInstallRoots(roots: string[]): string[] {
+	const forbidden = new Set(["", "/", homedir()]);
+	try { forbidden.add(realpathSync(homedir())); } catch { /* No home dir to compare. */ }
+	return [...new Set(roots)].filter((root) => !forbidden.has(root));
+}
+
+/** Drop managed install lines that are no longer wanted, add the missing ones. */
+function reconcileCodexInstallRoots(config: string, roots: string[]): string {
+	const header = `[permissions.${DEV3_CODEX_PROFILE}.filesystem]`;
+	const lines = config.split("\n");
+	const start = lines.findIndex((line) => line.trim() === header);
+	if (start === -1) return config;
+	let end = lines.findIndex((line, i) => i > start && line.trimStart().startsWith("["));
+	if (end === -1) end = lines.length;
+	const wanted = new Set(roots.map(codexInstallLine));
+	const isStale = (line: string) => line.trimEnd().endsWith(`= "read" ${CODEX_INSTALL_MARKER}`) && !wanted.has(line.trimEnd());
+	const kept = lines.slice(start + 1, end).filter((line) => !isStale(line));
+	let result = [...lines.slice(0, start + 1), ...kept, ...lines.slice(end)].join("\n");
+
+	let existing: Set<string>;
+	try {
+		existing = new Set(Object.keys((load(result) as CodexConfig).permissions?.[DEV3_CODEX_PROFILE]?.filesystem ?? {}));
+	} catch {
+		return config;
+	}
+	for (const root of roots) {
+		// An unmarked entry for the same path is the user's own; it stays as is.
+		if (!existing.has(root)) result = insertAfterSectionHeader(result, header, codexInstallLine(root));
+	}
+	return result;
 }
 
 /** A quoted TOML string whose content still looks like a native Windows path. */
@@ -747,6 +824,71 @@ async function probeCodex(flag: "--version" | "--help"): Promise<string | null> 
 	}
 }
 
+export type CodexSandboxProbeResult = "ok" | "helper-denied" | "unknown";
+
+/** Seatbelt refusing the helper exec: exit 71 and `sandbox-exec: execvp() ... failed`. */
+export function classifyCodexSandboxProbe(exitCode: number, stderr: string): CodexSandboxProbeResult {
+	if (exitCode === 0) return "ok";
+	if (exitCode === 71 || stderr.includes("sandbox-exec: execvp()")) return "helper-denied";
+	return "unknown";
+}
+
+async function probeCodexSandboxExec(launcherPath: string): Promise<CodexSandboxProbeResult> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let proc: ReturnType<typeof spawn> | undefined;
+	try {
+		proc = spawn(
+			[launcherPath, "sandbox", "-c", `default_permissions="${DEV3_CODEX_PROFILE}"`, "--", launcherPath, "--version"],
+			{ stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+		);
+		const stderr = new Response(proc.stderr).text();
+		const exitCode = await Promise.race([
+			proc.exited,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(new Error("Codex sandbox probe timed out after 10000ms")), 10_000);
+			}),
+		]);
+		return classifyCodexSandboxProbe(exitCode, await stderr);
+	} catch (err) {
+		try { proc?.kill(9); } catch { /* The child may already have exited. */ }
+		log.warn("Codex sandbox probe failed", { launcher: launcherPath, error: String(err) });
+		return "unknown";
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
+let lastSandboxProbeKey: string | undefined;
+
+export function resetCodexSandboxProbe(): void {
+	lastSandboxProbeKey = undefined;
+}
+
+/** Launcher and install roots to grant; undefined (leave grants alone) off macOS or when none resolve. */
+export async function resolveCodexInstall(): Promise<{ launcher: string; roots: string[] } | undefined> {
+	if (process.platform !== "darwin") return undefined;
+	const settings = await loadSettings();
+	const override = agentBinaryPathOverride("builtin-codex", "codex", settings.agentBinaryPaths, settings.agentCustomBinaryPaths);
+	const launcher = resolveBinaryPath("codex", override).resolvedPath;
+	if (!launcher) return undefined;
+	const roots = codexInstallReadRoots(launcher);
+	return roots.length > 0 ? { launcher, roots } : undefined;
+}
+
+/** Once per (launcher, roots) pair, check the sandbox helper can start. Diagnostic only; never changes a grant. */
+export async function probeCodexInstallAccess(launcher: string, roots: string[]): Promise<void> {
+	if (process.platform !== "darwin") return;
+	const key = [launcher, ...roots].join("\0");
+	if (key === lastSandboxProbeKey) return;
+	lastSandboxProbeKey = key;
+	const result = await probeCodexSandboxExec(launcher);
+	if (result === "helper-denied") {
+		log.error("Codex sandbox helper cannot start under the dev3 profile", { launcher, roots });
+	} else if (result === "unknown") {
+		log.warn("Codex sandbox probe inconclusive", { launcher, roots });
+	}
+}
+
 /**
  * Ensure the Codex config.toml has:
  * 1. The dev3 worktree project trusted
@@ -851,6 +993,7 @@ export function ensureCodexConfig(
 			`[permissions.${DEV3_CODEX_PROFILE}.filesystem]`,
 			'":minimal" = "read"',
 			...dev3FilesystemLines(userHome, dev3Home),
+			...[...new Set(options.codexInstallRoots)].map(codexInstallLine),
 			"",
 			filesystemRootsHeader(DEV3_CODEX_PROFILE, syntax.filesystemRootKey),
 			'"." = "write"',
@@ -887,6 +1030,9 @@ export function ensureCodexConfig(
 			if (!config.includes(fsLine)) {
 				config = insertAfterSectionHeader(config, fsHeader, fsLine);
 			}
+		}
+		if (options.codexInstallRoots) {
+			config = reconcileCodexInstallRoots(config, [...new Set(options.codexInstallRoots)]);
 		}
 		config = ensureFilesystemRootAccess(config, DEV3_CODEX_PROFILE, syntax.filesystemRootKey);
 	}
@@ -1618,6 +1764,7 @@ export async function ensureCodexConfigFile(homePath: string): Promise<void> {
 
 		const updated = ensureCodexConfig(content, worktreesPath, socketsPath, [], {
 			codexVersion,
+			codexInstallRoots: (await resolveCodexInstall())?.roots,
 		});
 
 		if (updated !== content) {

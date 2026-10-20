@@ -7,7 +7,7 @@ import { DEFAULT_AGENTS, DEPRECATED_DEFAULT_CONFIG_REMAP } from "../shared/types
 export { skillInvocationPrefix } from "../shared/types";
 import { buildProviderEnv, getProviderDefinition, providerOmitsModelFlag, providerPinnedModel } from "../shared/llm-provider";
 import { createLogger } from "./logger";
-import { backupUnparsableCodexConfig, joinLike as joinLikeHome, detectCodexProfileLaunchFlag, detectCodexVersion, resetCodexVersionProbe, resetCodexHelpProbe, ensureCodexConfig, ensureCodexProfileFiles, getCodexSyntaxForVersion, resolveCodexInstall, probeCodexInstallAccess, type CodexProfileLaunchFlag } from "./codex-config";
+import { backupUnparsableCodexConfig, joinLike as joinLikeHome, detectCodexProfileLaunchFlag, detectCodexVersion, resetCodexVersionProbe, resetCodexHelpProbe, ensureCodexConfig, ensureCodexProfileFiles, getCodexSyntaxForVersion, resolveCodexInstallRoots, type CodexProfileLaunchFlag } from "./codex-config";
 import { agentBinaryPathOverride } from "./executable";
 import { DEV3_HOME } from "./paths";
 // Writer and pruner share one path constant: whatever registers an entry must
@@ -1284,17 +1284,14 @@ export async function ensureCodexTrust(dirPath: string): Promise<void> {
 
 		if (content != null) backupUnparsableCodexConfig(CODEX_CONFIG, content);
 
-		const install = await resolveCodexInstall();
 		const updated = ensureCodexConfig(content, worktreesPath, socketsPath, [worktreesPath, resolved], {
 			codexVersion,
-			codexInstallRoots: install?.roots,
+			codexInstallRoots: await resolveCodexInstallRoots(),
 		});
 		if (updated !== content) {
 			writeFileSync(CODEX_CONFIG, updated, "utf-8");
 			log.info("Registered worktree as trusted in ~/.codex/config.toml", { path: resolved });
 		}
-		// Not awaited: the probe takes seconds and must never delay the launch.
-		if (install) void probeCodexInstallAccess(install.launcher, install.roots);
 
 		// Repairs the orphaned `[mcp_servers.*.tools]` tables Codex writes into the
 		// active profile during a session — they make the NEXT launch fail with

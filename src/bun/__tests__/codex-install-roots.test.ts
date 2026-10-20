@@ -1,19 +1,10 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { load } from "js-toml";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const spawnMock = vi.hoisted(() => vi.fn());
-vi.mock("../spawn", () => ({ spawn: spawnMock, spawnSync: vi.fn() }));
-
-import {
-	classifyCodexSandboxProbe,
-	codexInstallReadRoots,
-	ensureCodexConfig,
-	probeCodexInstallAccess,
-	resetCodexSandboxProbe,
-} from "../codex-config";
+import { codexInstallReadRoots, ensureCodexConfig } from "../codex-config";
 
 const WORKTREES = "/Users/testuser/.dev3.0/worktrees";
 const SOCKETS = "/Users/testuser/.dev3.0/sockets";
@@ -148,53 +139,5 @@ describe.skipIf(process.platform === "win32")("ensureCodexConfig codexInstallRoo
 		expect(Object.values(after).filter((mode) => mode === "write")).toHaveLength(
 			Object.values(before).filter((mode) => mode === "write").length,
 		);
-	});
-});
-
-describe("classifyCodexSandboxProbe", () => {
-	it("classifies exit codes and helper stderr", () => {
-		expect(classifyCodexSandboxProbe(0, "")).toBe("ok");
-		expect(classifyCodexSandboxProbe(71, "")).toBe("helper-denied");
-		expect(classifyCodexSandboxProbe(1, "sandbox-exec: execvp() of '/x/codex' failed: Operation not permitted")).toBe("helper-denied");
-		expect(classifyCodexSandboxProbe(2, "usage error")).toBe("unknown");
-	});
-});
-
-describe("probeCodexInstallAccess", () => {
-	const realPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-	function fakeProc(exitCode: number, stderr: string) {
-		return { exited: Promise.resolve(exitCode), stderr: new Response(stderr).body, kill: vi.fn() };
-	}
-
-	beforeEach(() => {
-		spawnMock.mockReset();
-		resetCodexSandboxProbe();
-		Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-	});
-	afterEach(() => {
-		if (realPlatform) Object.defineProperty(process, "platform", realPlatform);
-	});
-
-	it("runs the sandbox command once per launcher and roots pair", async () => {
-		spawnMock.mockImplementation(() => fakeProc(71, "sandbox-exec: execvp() failed"));
-		await probeCodexInstallAccess("/x/bin/codex", ["/x/bin"]);
-		await probeCodexInstallAccess("/x/bin/codex", ["/x/bin"]);
-		expect(spawnMock).toHaveBeenCalledTimes(1);
-		expect(spawnMock.mock.calls[0][0]).toEqual([
-			"/x/bin/codex", "sandbox", "-c", 'default_permissions="dev3"', "--", "/x/bin/codex", "--version",
-		]);
-		await probeCodexInstallAccess("/x/bin/codex", ["/x/bin", "/x/pkg"]);
-		expect(spawnMock).toHaveBeenCalledTimes(2);
-	});
-
-	it("does not throw when the spawn fails", async () => {
-		spawnMock.mockImplementation(() => { throw new Error("ENOENT"); });
-		await expect(probeCodexInstallAccess("/x/bin/codex", ["/x/bin"])).resolves.toBeUndefined();
-	});
-
-	it("skips the probe off macOS", async () => {
-		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-		await probeCodexInstallAccess("/x/bin/codex", ["/x/bin"]);
-		expect(spawnMock).not.toHaveBeenCalled();
 	});
 });

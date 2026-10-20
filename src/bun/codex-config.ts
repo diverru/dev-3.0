@@ -824,69 +824,15 @@ async function probeCodex(flag: "--version" | "--help"): Promise<string | null> 
 	}
 }
 
-export type CodexSandboxProbeResult = "ok" | "helper-denied" | "unknown";
-
-/** Seatbelt refusing the helper exec: exit 71 and `sandbox-exec: execvp() ... failed`. */
-export function classifyCodexSandboxProbe(exitCode: number, stderr: string): CodexSandboxProbeResult {
-	if (exitCode === 0) return "ok";
-	if (exitCode === 71 || stderr.includes("sandbox-exec: execvp()")) return "helper-denied";
-	return "unknown";
-}
-
-async function probeCodexSandboxExec(launcherPath: string): Promise<CodexSandboxProbeResult> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let proc: ReturnType<typeof spawn> | undefined;
-	try {
-		proc = spawn(
-			[launcherPath, "sandbox", "-c", `default_permissions="${DEV3_CODEX_PROFILE}"`, "--", launcherPath, "--version"],
-			{ stdin: "ignore", stdout: "ignore", stderr: "pipe" },
-		);
-		const stderr = new Response(proc.stderr).text();
-		const exitCode = await Promise.race([
-			proc.exited,
-			new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new Error("Codex sandbox probe timed out after 10000ms")), 10_000);
-			}),
-		]);
-		return classifyCodexSandboxProbe(exitCode, await stderr);
-	} catch (err) {
-		try { proc?.kill(9); } catch { /* The child may already have exited. */ }
-		log.warn("Codex sandbox probe failed", { launcher: launcherPath, error: String(err) });
-		return "unknown";
-	} finally {
-		if (timer) clearTimeout(timer);
-	}
-}
-
-let lastSandboxProbeKey: string | undefined;
-
-export function resetCodexSandboxProbe(): void {
-	lastSandboxProbeKey = undefined;
-}
-
-/** Launcher and install roots to grant; undefined (leave grants alone) off macOS or when none resolve. */
-export async function resolveCodexInstall(): Promise<{ launcher: string; roots: string[] } | undefined> {
+/** Codex install roots to grant; undefined (leave grants alone) off macOS or when none resolve. */
+export async function resolveCodexInstallRoots(): Promise<string[] | undefined> {
 	if (process.platform !== "darwin") return undefined;
 	const settings = await loadSettings();
 	const override = agentBinaryPathOverride("builtin-codex", "codex", settings.agentBinaryPaths, settings.agentCustomBinaryPaths);
 	const launcher = resolveBinaryPath("codex", override).resolvedPath;
 	if (!launcher) return undefined;
 	const roots = codexInstallReadRoots(launcher);
-	return roots.length > 0 ? { launcher, roots } : undefined;
-}
-
-/** Once per (launcher, roots) pair, check the sandbox helper can start. Diagnostic only; never changes a grant. */
-export async function probeCodexInstallAccess(launcher: string, roots: string[]): Promise<void> {
-	if (process.platform !== "darwin") return;
-	const key = [launcher, ...roots].join("\0");
-	if (key === lastSandboxProbeKey) return;
-	lastSandboxProbeKey = key;
-	const result = await probeCodexSandboxExec(launcher);
-	if (result === "helper-denied") {
-		log.error("Codex sandbox helper cannot start under the dev3 profile", { launcher, roots });
-	} else if (result === "unknown") {
-		log.warn("Codex sandbox probe inconclusive", { launcher, roots });
-	}
+	return roots.length > 0 ? roots : undefined;
 }
 
 /**
@@ -1764,7 +1710,7 @@ export async function ensureCodexConfigFile(homePath: string): Promise<void> {
 
 		const updated = ensureCodexConfig(content, worktreesPath, socketsPath, [], {
 			codexVersion,
-			codexInstallRoots: (await resolveCodexInstall())?.roots,
+			codexInstallRoots: await resolveCodexInstallRoots(),
 		});
 
 		if (updated !== content) {

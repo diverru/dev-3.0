@@ -271,15 +271,20 @@ describe.skipIf(!tmuxAvailable || !python3Available)(
 			const { term, write } = await remountedTerminal();
 			try {
 				let offset = bridgeStderr.length;
+				async function consumeOutput() {
+					const next = bridgeStderr.length;
+					if (next === offset) return;
+					await write(bridgeStderr.slice(offset, next));
+					offset = next;
+				}
 				tmux("refresh-client", "-t", clientName);
 				await expect.poll(() => bridgeStderr.slice(offset)).toContain("READY-HISTORY-200");
-				await write(bridgeStderr.slice(offset));
+				await consumeOutput();
 				expect(term.hasMouseTracking()).toBe(false);
 
-				offset = bridgeStderr.length;
 				process.kill(Number(clientPid), "SIGWINCH");
 				await expect.poll(() => bridgeStderr.slice(offset)).toMatch(/\x1b\[\?(?:1000|1002|1006)h/);
-				await write(bridgeStderr.slice(offset));
+				await consumeOutput();
 				expect(term.hasMouseTracking()).toBe(true);
 				expect(tmux("display-message", "-p", "-t", tmuxSession, "#{pane_width}x#{pane_height}")).toBe(geometry);
 				expect(readFileSync(winches, "utf8")).toBe(signalsBefore);
@@ -294,9 +299,14 @@ describe.skipIf(!tmuxAvailable || !python3Available)(
 				await expect.poll(() => tmux("display-message", "-p", "-t", tmuxSession, "#{pane_in_mode}")).toBe("1");
 				term.element!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
 				await expect.poll(() => Number(tmux("display-message", "-p", "-t", tmuxSession, "#{scroll_position}"))).toBeGreaterThan(0);
-				offset = bridgeStderr.length;
 				tmux("send-keys", "-t", tmuxSession, "-X", "history-top");
-				await expect.poll(() => bridgeStderr.slice(offset)).toContain("history-line-0");
+				await expect.poll(async () => {
+					await consumeOutput();
+					const buffer = term.buffer.active;
+					return Array.from({ length: term.rows }, (_, row) =>
+						buffer.getLine(buffer.length - term.rows + row)!.translateToString(true),
+					).join("\n");
+				}).toContain("history-line-0");
 				forwarding.dispose();
 			} finally {
 				tmux("send-keys", "-t", tmuxSession, "-X", "cancel");

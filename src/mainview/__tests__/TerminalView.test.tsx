@@ -1222,6 +1222,52 @@ describe("TerminalView – tmux copy-mode focus recovery", () => {
 		expect(lastWebSocket!.send.mock.calls.map(([s]) => s)).toEqual(["a", "b"]);
 	});
 
+	it.each([
+		[{ key: "Escape", code: "Escape" }, "\x1b"],
+		[{ key: "c", code: "KeyC", ctrlKey: true }, "\x03"],
+		[{ key: "q", code: "KeyQ" }, "q"],
+		[{ key: "ArrowUp", code: "ArrowUp" }, "\x1b[A"],
+		[{ key: "PageUp", code: "PageUp" }, "\x1b[5~"],
+		[{ key: "/", code: "Slash" }, "/"],
+	] as const)("leaves history commands %j to tmux without cancelling first", async (event, sequence) => {
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		await renderAndSetup();
+		act(() => { lastWebSocket!.onmessage!({ data: "$ " } as MessageEvent); });
+		const wheel = mockTermInstance.attachCustomWheelEventHandler.mock.lastCall![0] as (e: WheelEvent) => boolean;
+		act(() => { wheel({ deltaY: -100, clientX: 20, clientY: 20 } as WheelEvent); });
+		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
+		const data = (mockTermInstance.onData.mock.lastCall as unknown as [(s: string) => void])[0];
+		mockedExitCopyModeAllPanes.mockClear();
+		lastWebSocket!.send.mockClear();
+		act(() => {
+			expect(key(new KeyboardEvent("keydown", event))).toBe(false);
+			data(sequence);
+		});
+		expect(mockedExitCopyModeAllPanes).not.toHaveBeenCalled();
+		expect(lastWebSocket!.send.mock.calls.map(([s]) => s)).toEqual([sequence]);
+	});
+
+	it("keeps subsequent search text and Enter with tmux after a history command", async () => {
+		await renderAndSetup();
+		act(() => { lastWebSocket!.onmessage!({ data: "history" } as MessageEvent); });
+		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
+		const data = (mockTermInstance.onData.mock.lastCall as unknown as [(s: string) => void])[0];
+		mockedExitCopyModeAllPanes.mockClear();
+		lastWebSocket!.send.mockClear();
+		act(() => {
+			key(new KeyboardEvent("keydown", { key: "r", code: "KeyR", ctrlKey: true }));
+			data("\x12");
+			for (const char of "needle") {
+				key(new KeyboardEvent("keydown", { key: char }));
+				data(char);
+			}
+			key(new KeyboardEvent("keydown", { key: "Enter", code: "Enter" }));
+			data("\r");
+		});
+		expect(mockedExitCopyModeAllPanes).not.toHaveBeenCalled();
+		expect(lastWebSocket!.send.mock.calls.map(([s]) => s).join("")).toBe("\x12needle\r");
+	});
+
 	it("resumes inherited copy mode on the first key after a terminal remount", async () => {
 		await renderAndSetup();
 		act(() => { lastWebSocket!.onmessage!({ data: "retained tmux viewport" } as MessageEvent); });
@@ -2181,6 +2227,23 @@ describe("TerminalView – native stream framing", () => {
 
 		expect(webSockets).toHaveLength(2);
 		expect(webSockets[1].url).toBe(`${PTY_URL}&since=9`);
+	});
+
+	it("reattaches an open native socket on foreground and applies its journal delta", async () => {
+		await renderNative();
+		deliver(frame({ t: "o", seq: 9 }, "screen before background"));
+		mockTermInstance.write.mockClear();
+		await act(async () => {
+			Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+			document.dispatchEvent(new Event("visibilitychange"));
+			Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+			document.dispatchEvent(new Event("visibilitychange"));
+		});
+		expect(webSockets[0].close).toHaveBeenCalledOnce();
+		expect(webSockets[1].url).toBe(`${PTY_URL}&since=9`);
+		deliver(frame({ t: "attach", seq: 10, role: "writer", sessionId: "s", paneId: "s:0", hostPid: 1, shellPid: 2, resumed: true }, "output while hidden"));
+		expect(mockTermInstance.write).toHaveBeenCalledWith("output while hidden");
+		expect(mockTermInstance.write.mock.calls.some(([text]) => text.includes("\x1bc"))).toBe(false);
 	});
 
 	it("replaces the screen in one write when the server rebuilt it", async () => {

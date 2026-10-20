@@ -178,10 +178,10 @@ set -g pane-border-lines double
 # Clipboard support
 set -s set-clipboard on
 
-# Copy through OSC 52 without leaving the history viewport.
+# Retain a scrolled history viewport; a live-screen copy must not hold agent input.
 # Explicit bindings also replace old copy-and-cancel on running servers.
-bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe
-bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe
+bind -T copy-mode MouseDragEnd1Pane if-shell -F '#{>:#{scroll_position},0}' 'send-keys -X copy-pipe' 'send-keys -X copy-pipe-and-cancel'
+bind -T copy-mode-vi MouseDragEnd1Pane if-shell -F '#{>:#{scroll_position},0}' 'send-keys -X copy-pipe' 'send-keys -X copy-pipe-and-cancel'
 
 # Bell pass-through
 set -g visual-bell off

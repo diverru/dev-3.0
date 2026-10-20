@@ -102,15 +102,14 @@ describe("buildThemeConfig", () => {
 		expect(buildThemeConfig("mocha")).toContain("history-limit 250000");
 	});
 
-	it("copies mouse selections without cancelling the history viewport", () => {
+	it("retains scrolled history selections but cancels live-screen copies", () => {
 		const config = buildThemeConfig("mocha");
 		expect(config).toContain(
-			"bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe",
+			"bind -T copy-mode MouseDragEnd1Pane if-shell -F '#{>:#{scroll_position},0}' 'send-keys -X copy-pipe' 'send-keys -X copy-pipe-and-cancel'",
 		);
 		expect(config).toContain(
-			"bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe",
+			"bind -T copy-mode-vi MouseDragEnd1Pane if-shell -F '#{>:#{scroll_position},0}' 'send-keys -X copy-pipe' 'send-keys -X copy-pipe-and-cancel'",
 		);
-		expect(config).not.toContain("MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel");
 	});
 
 	it("puts prefix-free pane navigation on Alt+Shift+arrow and frees plain Alt+arrow", () => {

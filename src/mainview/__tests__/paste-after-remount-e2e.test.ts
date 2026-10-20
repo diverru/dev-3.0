@@ -344,10 +344,24 @@ describe.skipIf(!tmuxAvailable || !python3Available)(
 			try {
 				let row = 2;
 				tmux("set-window-option", "-t", tmuxSession, "mode-keys", "emacs");
+				const liveCopyOffset = bridgeStderr.length;
+				bridge!.stdin!.write("\x1b[<0;1;2M\x1b[<32;4;2M", "utf8");
+				await expect.poll(() => tmux("display-message", "-p", "-t", tmuxSession, "#{pane_in_mode}")).toBe("1");
+				bridge!.stdin!.write("\x1b[<32;8;2M\x1b[<0;8;2m", "utf8");
+				await expect.poll(() => bridgeStderr.slice(liveCopyOffset)).toMatch(/\x1b\]52;/);
+				await expect.poll(() => tmux("display-message", "-p", "-t", tmuxSession, "#{pane_in_mode}")).toBe("0");
+				for (const cancel of ["\x1b", "\x03", "q"]) {
+					tmux("copy-mode", "-u", "-t", tmuxSession);
+					bridge!.stdin!.write(cancel, "utf8");
+					await expect.poll(() => tmux("display-message", "-p", "-t", tmuxSession, "#{pane_in_mode}")).toBe("0");
+					expect(readFileSync(capture, "utf8")).toBe("");
+				}
 				tmux("copy-mode", "-u", "-t", tmuxSession);
 				const position = tmux("display-message", "-p", "-t", tmuxSession, "#{scroll_position}");
 				expect(Number(position)).toBeGreaterThan(0);
 				for (const start of [1, 3]) {
+					// Separate drag gestures from tmux's double/triple-click detection window.
+					await new Promise((resolve) => setTimeout(resolve, 350));
 					row += 3;
 					const end = start + 7;
 					const offset = bridgeStderr.length;

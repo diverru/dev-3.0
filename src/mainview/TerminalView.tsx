@@ -362,6 +362,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 	// jump to live output. Remember when that mode may be active so the next
 	// plain click can return to live input without requiring Escape.
 	const tmuxCopyModeMayBeActiveRef = useRef(false);
+	const tmuxHistoryKeyboardRef = useRef(false);
 	// Scrolled-into-history signal for the host (touch scroll-to-latest button).
 	// tmux cannot tell us when a swipe reaching the bottom ended copy-mode, so
 	// while the flag is up we poll pane_in_mode and drop it when tmux did.
@@ -381,6 +382,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 	}, [stopCopyModePoll]);
 	const markTmuxCopyModeMayBeActive = useCallback(() => {
 		tmuxCopyModeMayBeActiveRef.current = true;
+		tmuxHistoryKeyboardRef.current = false;
 		// No host listening (pointer input) → no signal and no poll. The flag above
 		// still matters: it is what the desktop click-to-leave-copy-mode path reads.
 		if (!onScrolledIntoHistoryRef.current) return;
@@ -1347,10 +1349,17 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 							// Replace sequences ghostty-web encodes wrongly or unhelpfully
 							// (see terminal-key-overrides.ts); onData keeps the latency probe fed.
 							term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+								// Let tmux consume history cancel/navigation keys before they can reach the agent.
+								const resumesInput = !event.metaKey && !event.ctrlKey && !event.altKey && (
+									(event.key.length === 1 && !["q", "/", " "].includes(event.key)) ||
+									["Enter", "Backspace", "Delete"].includes(event.key)
+								);
 								if (tmuxStreamRef.current && copyModePending() && !event.metaKey &&
 									!["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key) &&
 									!(event.ctrlKey && event.shiftKey && event.code === "KeyC")) {
-									void exitCopyModeIfNeeded();
+									if (!resumesInput) tmuxHistoryKeyboardRef.current = true;
+									// A history command may open a tmux search prompt that owns subsequent text.
+									else if (!tmuxHistoryKeyboardRef.current) void exitCopyModeIfNeeded();
 								}
 								const seq = getTerminalKeyOverride(event, tmuxStreamRef.current);
 								if (!seq) return false;

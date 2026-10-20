@@ -10,7 +10,7 @@ On a live Codex task, a height-only resize pair generated 215,894 UTF-8 WebSocke
 
 ## Decision
 
-`TerminalView.tsx` reports the actual size once on open and foreground refresh, waiting for the initial layout to settle through its existing 100 ms refit debounce before connecting. In `pty-server.ts::applyClientSizes`, an unchanged tmux size sends `SIGWINCH` to the attached client process: tmux reinitializes its outer terminal without changing pane geometry. Native already provides its attach replay and does nothing for unchanged geometry. The remote PTY proxy retains the latest early geometry report until its upstream opens; the old second resize accidentally masked this race.
+`TerminalView.tsx` reports the actual size once on open and foreground refresh, waiting for the initial layout to settle through its existing 100 ms refit debounce before connecting. In `pty-server.ts::applyClientSizes`, an unchanged tmux size sends `SIGWINCH` to the attached client process: tmux reinitializes its outer terminal without changing pane geometry. Native does nothing for unchanged geometry; `reconnectPtyOnResume` replaces even an open socket after a hidden→visible cycle and requests journal replay from the last watermark, so foreground restoration does not require resizing. The remote PTY proxy retains the latest early geometry report until its upstream opens; the old second resize accidentally masked this race.
 
 ## Risks
 

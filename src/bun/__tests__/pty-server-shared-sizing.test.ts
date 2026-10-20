@@ -92,12 +92,11 @@ function connect(taskId: string, cols: number, rows: number): FakeViewer {
 	const viewer = new FakeViewer(taskId);
 	wsHandlers.open(viewer);
 	wsHandlers.message(viewer, encodeResizeSequence(cols, rows));
-	// Let a first-paint jiggle finish so its deferred resize cannot land later.
 	vi.advanceTimersByTime(50);
 	return viewer;
 }
 
-/** The size the PTY was last resized to, ignoring the one-row repaint jiggle. */
+/** The size the PTY was last resized to. */
 function ptySize(): { cols: number; rows: number } | null {
 	vi.advanceTimersByTime(50);
 	const calls = terminal.resize.mock.calls;

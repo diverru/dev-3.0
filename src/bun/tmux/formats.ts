@@ -177,6 +177,13 @@ export const PANE_IN_MODE_FORMAT = tmuxFormat()
 	.flag("inMode", "pane_in_mode")
 	.build();
 
+/** Copy-mode flag plus the key table it reads (`emacs` / `vi`) — leaving copy-mode for typed keys. */
+export const PANE_COPY_MODE_FORMAT = tmuxFormat()
+	.string("paneId", "pane_id")
+	.flag("inMode", "pane_in_mode")
+	.string("modeKeys", "mode-keys")
+	.build();
+
 /**
  * Copy-mode search state — the terminal ⌘F bar. `search_count` goes STALE
  * after a miss (tmux keeps the previous hit's number), so consumers must

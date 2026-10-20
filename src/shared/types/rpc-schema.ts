@@ -1210,8 +1210,8 @@ export type AppRPCSchema = {
 				response: { moved: boolean };
 			};
 			exitCopyModeAllPanes: {
-				params: { taskId: string };
-				response: { panesExited: number };
+				params: { taskId: string; typedKey?: boolean };
+				response: { panesExited: number; panesKept: number };
 			};
 			tmuxPanesInMode: {
 				params: { taskId: string };

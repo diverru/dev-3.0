@@ -9613,14 +9613,14 @@ describe("handlers.exitCopyModeAllPanes", () => {
 		vi.mocked(pty.tmuxSessionExists).mockResolvedValue(true);
 		setupSpawnRouter({
 			hasSession: 1, // dev-server not running
-			listTaskPanes: { exit: 0, out: "%0\t1\n%1\t0\n%2\t1\n" },
+			listTaskPanes: { exit: 0, out: "%0\t1\temacs\n%1\t0\temacs\n%2\t1\temacs\n" },
 		});
 
 		const result = await handlers.exitCopyModeAllPanes({ taskId: "abcd1234-full-id" });
 
-		expect(result).toEqual({ panesExited: 2 });
+		expect(result).toEqual({ panesExited: 2, panesKept: 0 });
 		expect(mockSpawn).toHaveBeenCalledWith(
-			["tmux", "-L", "dev3", "list-panes", "-s", "-t", "dev3-abcd1234", "-F", "#{pane_id}\t#{pane_in_mode}"],
+			["tmux", "-L", "dev3", "list-panes", "-s", "-t", "dev3-abcd1234", "-F", "#{pane_id}\t#{pane_in_mode}\t#{mode-keys}"],
 			expect.any(Object),
 		);
 		expect(mockSpawn).toHaveBeenCalledWith(
@@ -9642,15 +9642,15 @@ describe("handlers.exitCopyModeAllPanes", () => {
 		vi.mocked(pty.tmuxSessionExists).mockResolvedValue(true);
 		setupSpawnRouter({
 			hasSession: 0, // dev-server IS running
-			listTaskPanes: { exit: 0, out: "%10\t0\n" },
-			listDevPanes: { exit: 0, out: "%99\t1\n" }, // dev-server pane in copy-mode
+			listTaskPanes: { exit: 0, out: "%10\t0\temacs\n" },
+			listDevPanes: { exit: 0, out: "%99\t1\temacs\n" }, // dev-server pane in copy-mode
 		});
 
 		const result = await handlers.exitCopyModeAllPanes({ taskId: "abcd1234-full-id" });
 
-		expect(result).toEqual({ panesExited: 1 });
+		expect(result).toEqual({ panesExited: 1, panesKept: 0 });
 		expect(mockSpawn).toHaveBeenCalledWith(
-			["tmux", "-L", "dev3", "list-panes", "-s", "-t", "dev3-dev-abcd1234", "-F", "#{pane_id}\t#{pane_in_mode}"],
+			["tmux", "-L", "dev3", "list-panes", "-s", "-t", "dev3-dev-abcd1234", "-F", "#{pane_id}\t#{pane_in_mode}\t#{mode-keys}"],
 			expect.any(Object),
 		);
 		expect(mockSpawn).toHaveBeenCalledWith(
@@ -9664,7 +9664,7 @@ describe("handlers.exitCopyModeAllPanes", () => {
 
 		const result = await handlers.exitCopyModeAllPanes({ taskId: "abcd1234-full-id" });
 
-		expect(result).toEqual({ panesExited: 0 });
+		expect(result).toEqual({ panesExited: 0, panesKept: 0 });
 		// Only the has-session check (for dev-server) was spawned; no list-panes
 		expect(mockSpawn).not.toHaveBeenCalledWith(
 			expect.arrayContaining(["list-panes"]),
@@ -9681,7 +9681,7 @@ describe("handlers.exitCopyModeAllPanes", () => {
 
 		const result = await handlers.exitCopyModeAllPanes({ taskId: "abcd1234-full-id" });
 
-		expect(result).toEqual({ panesExited: 0 });
+		expect(result).toEqual({ panesExited: 0, panesKept: 0 });
 		expect(mockSpawn).not.toHaveBeenCalledWith(
 			expect.arrayContaining(["send-keys"]),
 			expect.any(Object),
@@ -9697,7 +9697,43 @@ describe("handlers.exitCopyModeAllPanes", () => {
 
 		const result = await handlers.exitCopyModeAllPanes({ taskId: "abcd1234-full-id" });
 
-		expect(result).toEqual({ panesExited: 0 });
+		expect(result).toEqual({ panesExited: 0, panesKept: 0 });
+	});
+
+	it("keeps copy-mode-vi panes in history for a typed key, where it is a command", async () => {
+		vi.mocked(pty.tmuxSessionExists).mockResolvedValue(true);
+		setupSpawnRouter({
+			hasSession: 1,
+			listTaskPanes: { exit: 0, out: "%0\t1\tvi\n%1\t1\temacs\n" },
+		});
+
+		const result = await handlers.exitCopyModeAllPanes({ taskId: "abcd1234-full-id", typedKey: true });
+
+		expect(result).toEqual({ panesExited: 1, panesKept: 1 });
+		expect(mockSpawn).toHaveBeenCalledWith(
+			["tmux", "-L", "dev3", "send-keys", "-t", "%1", "-X", "cancel"],
+			expect.any(Object),
+		);
+		expect(mockSpawn).not.toHaveBeenCalledWith(
+			["tmux", "-L", "dev3", "send-keys", "-t", "%0", "-X", "cancel"],
+			expect.any(Object),
+		);
+	});
+
+	it("still leaves copy-mode-vi for a click or paste", async () => {
+		vi.mocked(pty.tmuxSessionExists).mockResolvedValue(true);
+		setupSpawnRouter({
+			hasSession: 1,
+			listTaskPanes: { exit: 0, out: "%0\t1\tvi\n" },
+		});
+
+		const result = await handlers.exitCopyModeAllPanes({ taskId: "abcd1234-full-id" });
+
+		expect(result).toEqual({ panesExited: 1, panesKept: 0 });
+		expect(mockSpawn).toHaveBeenCalledWith(
+			["tmux", "-L", "dev3", "send-keys", "-t", "%0", "-X", "cancel"],
+			expect.any(Object),
+		);
 	});
 });
 

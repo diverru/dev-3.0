@@ -4,7 +4,7 @@ import * as data from "../../data";
 import * as pty from "../../pty-server";
 import { getPortsForTask } from "../../port-scanner";
 import { boostResourceMonitor, clearResourceMonitorBoost, getResourceUsage } from "../../resource-monitor";
-import { tmux, DEFAULT_TMUX_SOCKET, TmuxError, devServerSessionName, devServerSessionForTaskSession, parseDev3SessionName, PANE_CWD_FORMAT, PANE_ID_FORMAT, PANE_IN_MODE_FORMAT, PANE_SWITCHER_FORMAT, WINDOW_SWITCHER_FORMAT, WINDOW_PANE_FORMAT, TMUX_LAST_AGENT_PANE_OPTION, SEARCH_STATE_FORMAT, SESSION_OVERVIEW_FORMAT, ALT_CLICK_PANE_FORMAT, altClickIneligibleReason, clientCellToWindowCell, computeAltClickKeys, findAltClickPane, validAltClickPanes } from "../../tmux";
+import { tmux, DEFAULT_TMUX_SOCKET, TmuxError, devServerSessionName, devServerSessionForTaskSession, parseDev3SessionName, PANE_CWD_FORMAT, PANE_ID_FORMAT, PANE_IN_MODE_FORMAT, PANE_COPY_MODE_FORMAT, PANE_SWITCHER_FORMAT, WINDOW_SWITCHER_FORMAT, WINDOW_PANE_FORMAT, TMUX_LAST_AGENT_PANE_OPTION, SEARCH_STATE_FORMAT, SESSION_OVERVIEW_FORMAT, ALT_CLICK_PANE_FORMAT, altClickIneligibleReason, clientCellToWindowCell, computeAltClickKeys, findAltClickPane, validAltClickPanes } from "../../tmux";
 import { buildWindowEntries } from "../../tmux/window-nav";
 import { log } from "../shared-pure";
 import { collectDevServerTreePids, reapDevServerTree } from "./dev-servers";
@@ -577,21 +577,27 @@ async function copyModeSessions(key: string, socket: string): Promise<string[]> 
 	return found;
 }
 
-async function exitCopyModeInSession(socket: string, tmuxSession: string): Promise<number> {
-	let panesInMode: string[];
+async function exitCopyModeInSession(
+	socket: string,
+	tmuxSession: string,
+	typedKey: boolean,
+): Promise<{ exited: number; kept: number }> {
+	let panesInMode: { paneId: string; modeKeys: string }[];
 	try {
-		const rows = await tmux.listPanes(PANE_IN_MODE_FORMAT, { target: tmuxSession, scope: "session", socket });
-		panesInMode = rows.filter((row) => row.paneId && row.inMode).map((row) => row.paneId);
+		const rows = await tmux.listPanes(PANE_COPY_MODE_FORMAT, { target: tmuxSession, scope: "session", socket });
+		panesInMode = rows.filter((row) => row.paneId && row.inMode);
 	} catch (err) {
-		if (err instanceof TmuxError) return 0;
+		if (err instanceof TmuxError) return { exited: 0, kept: 0 };
 		throw err;
 	}
 
-	for (const paneId of panesInMode) {
+	// In copy-mode-vi a printable key (k, v, ?, n…) is a history command, so typing stays there.
+	const toExit = typedKey ? panesInMode.filter((pane) => pane.modeKeys !== "vi") : panesInMode;
+	for (const { paneId } of toExit) {
 		await tmux.exitCopyMode(paneId, { socket, bestEffort: true });
 	}
 
-	return panesInMode.length;
+	return { exited: toExit.length, kept: panesInMode.length - toExit.length };
 }
 
 /**
@@ -613,21 +619,28 @@ export async function tmuxPanesInMode(params: { taskId: string }): Promise<{ inM
 	return { inMode: false };
 }
 
-export async function exitCopyModeAllPanes(params: { taskId: string }): Promise<{ panesExited: number }> {
+/**
+ * `typedKey`: the exit is for a key the renderer classed as typed text, which holds
+ * only for the emacs table; copy-mode-vi panes stay in history (`panesKept`).
+ */
+export async function exitCopyModeAllPanes(params: { taskId: string; typedKey?: boolean }): Promise<{ panesExited: number; panesKept: number }> {
 	const socket = pty.getSessionSocket(params.taskId);
 	// Copy mode is a tmux concept, so a native task owns no session here and this
 	// whole handler is a no-op for it.
 	const sessions = await copyModeSessions(params.taskId, socket);
 
 	let total = 0;
+	let kept = 0;
 	for (const session of sessions) {
-		total += await exitCopyModeInSession(socket, session);
+		const result = await exitCopyModeInSession(socket, session, params.typedKey === true);
+		total += result.exited;
+		kept += result.kept;
 	}
 
 	if (total > 0) {
 		log.info("Exited copy-mode in panes", { taskId: params.taskId.slice(0, 8), count: total, sessions });
 	}
-	return { panesExited: total };
+	return { panesExited: total, panesKept: kept };
 }
 
 // ── Terminal ⌘F search (tmux copy-mode search) ─────────────────────────

@@ -133,7 +133,7 @@ vi.mock("../rpc", () => ({
 			taskPaneAction: vi.fn(),
 			tmuxNewWindow: vi.fn(),
 			tmuxAltClickMoveCursor: vi.fn().mockResolvedValue({ moved: true }),
-			exitCopyModeAllPanes: vi.fn().mockResolvedValue({ panesExited: 1 }),
+			exitCopyModeAllPanes: vi.fn().mockResolvedValue({ panesExited: 1, panesKept: 0 }),
 			tmuxPanesInMode: vi.fn().mockResolvedValue({ inMode: true }),
 			logRendererDiagnostic: vi.fn().mockResolvedValue(undefined),
 			copyTerminalSelection: vi.fn().mockResolvedValue({ ok: true, tool: "pbcopy" }),
@@ -1030,7 +1030,7 @@ describe("TerminalView – scrolled-into-history signal (touch scroll-to-latest)
 		let release!: () => void;
 		mockedExitCopyModeAllPanes.mockClear();
 		mockedExitCopyModeAllPanes.mockReturnValueOnce(new Promise((resolve) => {
-			release = () => resolve({ panesExited: 1 });
+			release = () => resolve({ panesExited: 1, panesKept: 0 });
 		}));
 		lastWebSocket!.send.mockClear();
 		mockPaste.mockClear();
@@ -1047,6 +1047,17 @@ describe("TerminalView – scrolled-into-history signal (touch scroll-to-latest)
 		await act(async () => { release(); });
 		if (source === "clipboard") expect(mockPaste).toHaveBeenCalledWith("x");
 		else expect(lastWebSocket!.send).toHaveBeenCalledWith("x");
+	});
+
+	it.each(["\x1b", "\x03", "\x1b[A", "q"])("keeps extra-key %j with tmux instead of cancelling first", async (sequence) => {
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		const { handle, wheelHandler } = await renderWithSignal();
+		act(() => { wheelHandler({ deltaY: -100, clientX: 20, clientY: 20 } as WheelEvent); });
+		mockedExitCopyModeAllPanes.mockClear();
+		lastWebSocket!.send.mockClear();
+		act(() => { handle.sendInput(sequence); });
+		expect(mockedExitCopyModeAllPanes).not.toHaveBeenCalled();
+		expect(lastWebSocket!.send.mock.calls).toEqual([[sequence]]);
 	});
 
 	it("without a pending scroll-up, paste stays synchronous and never calls tmux", async () => {
@@ -1068,7 +1079,7 @@ describe("TerminalView – scrolled-into-history signal (touch scroll-to-latest)
 		let release!: () => void;
 		mockedExitCopyModeAllPanes.mockClear();
 		mockedExitCopyModeAllPanes.mockReturnValue(
-			new Promise<{ panesExited: number }>((resolve) => { release = () => resolve({ panesExited: 1 }); }),
+			new Promise<{ panesExited: number; panesKept: number }>((resolve) => { release = () => resolve({ panesExited: 1, panesKept: 0 }); }),
 		);
 		mockPaste.mockClear();
 
@@ -1079,7 +1090,7 @@ describe("TerminalView – scrolled-into-history signal (touch scroll-to-latest)
 
 		await act(async () => { release(); await Promise.resolve(); await Promise.resolve(); });
 		expect(mockPaste.mock.calls.map((call) => call[0])).toEqual(["first", "second"]);
-		mockedExitCopyModeAllPanes.mockResolvedValue({ panesExited: 1 });
+		mockedExitCopyModeAllPanes.mockResolvedValue({ panesExited: 1, panesKept: 0 });
 	});
 
 	// The poll is the only tmux traffic this feature adds, and a pointer host
@@ -1205,7 +1216,7 @@ describe("TerminalView – tmux copy-mode focus recovery", () => {
 		let release!: () => void;
 		mockedExitCopyModeAllPanes.mockClear();
 		mockedExitCopyModeAllPanes.mockReturnValueOnce(new Promise((resolve) => {
-			release = () => resolve({ panesExited: 1 });
+			release = () => resolve({ panesExited: 1, panesKept: 0 });
 		}));
 		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
 		const data = (mockTermInstance.onData.mock.lastCall as unknown as [(s: string) => void])[0];
@@ -1274,7 +1285,54 @@ describe("TerminalView – tmux copy-mode focus recovery", () => {
 		mockedExitCopyModeAllPanes.mockClear();
 		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
 		act(() => { key(new KeyboardEvent("keydown", { key: "a", code: "KeyA" })); });
-		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledWith({ taskId: "t1" });
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledWith({ taskId: "t1", typedKey: true });
+	});
+
+	it("stays in copy-mode-vi history when tmux keeps the typed key as a command", async () => {
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		const { container } = await renderAndSetup();
+		act(() => { lastWebSocket!.onmessage!({ data: "$ " } as MessageEvent); });
+		const wheel = mockTermInstance.attachCustomWheelEventHandler.mock.lastCall![0] as (e: WheelEvent) => boolean;
+		act(() => { wheel({ deltaY: -100, clientX: 20, clientY: 20 } as WheelEvent); });
+		let release!: () => void;
+		mockedExitCopyModeAllPanes.mockClear();
+		mockedExitCopyModeAllPanes.mockReturnValueOnce(new Promise((resolve) => {
+			release = () => resolve({ panesExited: 0, panesKept: 1 });
+		}));
+		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
+		const data = (mockTermInstance.onData.mock.lastCall as unknown as [(s: string) => void])[0];
+		lastWebSocket!.send.mockClear();
+		act(() => {
+			key(new KeyboardEvent("keydown", { key: "k", code: "KeyK" }));
+			data("k");
+		});
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledWith({ taskId: "t1", typedKey: true });
+		await act(async () => { release(); });
+		act(() => {
+			key(new KeyboardEvent("keydown", { key: "j", code: "KeyJ" }));
+			data("j");
+		});
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledTimes(1);
+		expect(lastWebSocket!.send.mock.calls.map(([s]) => s)).toEqual(["k", "j"]);
+		// Still in history, so a plain click must leave it.
+		await act(async () => { fireEvent.click(container.querySelector('[data-terminal="true"]') as HTMLElement); });
+		expect(mockedExitCopyModeAllPanes).toHaveBeenLastCalledWith({ taskId: "t1" });
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledTimes(2);
+	});
+
+	it("a click that leaves history lets the next inherited copy-mode resume on typing", async () => {
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		const { container } = await renderAndSetup();
+		act(() => { lastWebSocket!.onmessage!({ data: "$ " } as MessageEvent); });
+		const wheel = mockTermInstance.attachCustomWheelEventHandler.mock.lastCall![0] as (e: WheelEvent) => boolean;
+		act(() => { wheel({ deltaY: -100, clientX: 20, clientY: 20 } as WheelEvent); });
+		const key = mockTermInstance.attachCustomKeyEventHandler.mock.lastCall![0] as (e: KeyboardEvent) => boolean;
+		act(() => { key(new KeyboardEvent("keydown", { key: "ArrowUp", code: "ArrowUp" })); });
+		await act(async () => { fireEvent.click(container.querySelector('[data-terminal="true"]') as HTMLElement); });
+		act(() => { window.dispatchEvent(new Event("focus")); });
+		mockedExitCopyModeAllPanes.mockClear();
+		act(() => { key(new KeyboardEvent("keydown", { key: "a", code: "KeyA" })); });
+		expect(mockedExitCopyModeAllPanes).toHaveBeenCalledWith({ taskId: "t1", typedKey: true });
 	});
 
 	it("keeps history for mouse reports, terminal replies and copy modifier keys", async () => {
@@ -1915,6 +1973,9 @@ describe("normalizePastedText", () => {
 });
 
 describe("TerminalView – redraw without synthetic geometry", () => {
+	const sizeReports = () =>
+		lastWebSocket!.send.mock.calls.map(([data]) => data as string).filter((data) => data.startsWith("\x1b]resize;"));
+
 	it("waits for initial layout to settle before reporting its size", async () => {
 		vi.useFakeTimers();
 		try {
@@ -1929,7 +1990,7 @@ describe("TerminalView – redraw without synthetic geometry", () => {
 			expect(lastWebSocket).toBeNull();
 			await act(async () => { vi.advanceTimersByTime(1); });
 			await act(async () => { lastWebSocket!.onopen?.(new Event("open")); });
-			expect(lastWebSocket!.send.mock.calls.map(([data]) => data)).toEqual(["\x1b]resize;80;37\x07"]);
+			expect(sizeReports()).toEqual(["\x1b]resize;80;37\x07"]);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1940,7 +2001,7 @@ describe("TerminalView – redraw without synthetic geometry", () => {
 		fitAddonHolder.current!.proposeDimensions = vi.fn(() => ({ cols: 80, rows: 24 }));
 		lastWebSocket!.send.mockClear();
 		await act(async () => { lastWebSocket!.onopen?.(new Event("open")); });
-		expect(lastWebSocket!.send.mock.calls.map(([data]) => data)).toEqual(["\x1b]resize;80;24\x07"]);
+		expect(sizeReports()).toEqual(["\x1b]resize;80;24\x07"]);
 	});
 
 });
@@ -2938,6 +2999,7 @@ describe("TerminalView – shared tmux size", () => {
 		await act(async () => {
 			fireResize?.();
 		});
+		await waitForInitialSocket();
 		return { container: result.container.querySelector("[data-terminal]") as HTMLElement, pill: () => result.queryByText("Sized for another viewer") };
 	}
 
@@ -3039,6 +3101,7 @@ describe("TerminalView – shared tmux size", () => {
 		await act(async () => {
 			fireResize?.();
 		});
+		await waitForInitialSocket();
 		notice(22, 40, false);
 		lastWebSocket!.send.mockClear();
 		fireEvent.click(result.getByText("Sized for another viewer"));

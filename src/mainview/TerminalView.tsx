@@ -6,6 +6,7 @@ import { toast } from "./toast";
 import { api, isElectrobun } from "./rpc";
 import { getTerminalKeyOverride } from "./terminal-key-overrides";
 import { pasteIntoTerminal, terminalBracketsPaste } from "./terminal-paste";
+import { inputTypesText, keyTypesText } from "./terminal-history-input";
 import { debugLog } from "./debug-log";
 import SharedSizeNotice from "./components/SharedSizeNotice";
 import {
@@ -408,21 +409,48 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 		() => tmuxCopyModeMayBeActiveRef.current || copyModeExitRef.current !== null,
 		[],
 	);
-	/** Leave tmux copy-mode if a scroll may have entered it; resolves once tmux has been told. */
-	const exitCopyModeIfNeeded = useCallback((): Promise<void> => {
+	/**
+	 * Leave tmux copy-mode if a scroll may have entered it; resolves once tmux has been told.
+	 * `typedKey`: tmux keeps copy-mode-vi panes in history, where that key is a command.
+	 */
+	const exitCopyModeIfNeeded = useCallback((typedKey = false): Promise<void> => {
 		if (copyModeExitRef.current) return copyModeExitRef.current;
 		if (!tmuxCopyModeMayBeActiveRef.current) return Promise.resolve();
 		tmuxCopyModeMayBeActiveRef.current = false;
+		tmuxHistoryKeyboardRef.current = false;
 		setScrolledIntoHistory(false);
-		const pending = api.request.exitCopyModeAllPanes({ taskId })
-			.then(() => undefined)
+		const pending = api.request.exitCopyModeAllPanes(typedKey ? { taskId, typedKey } : { taskId })
+			.then(({ panesKept }) => {
+				if (!panesKept) return;
+				markTmuxCopyModeMayBeActive();
+				tmuxHistoryKeyboardRef.current = true;
+			})
 			// Best effort — the pane may already have returned to live input.
 			.catch(() => undefined)
 			.finally(() => { copyModeExitRef.current = null; });
 		copyModeExitRef.current = pending;
 		return pending;
-	}, [setScrolledIntoHistory, taskId]);
+	}, [markTmuxCopyModeMayBeActive, setScrolledIntoHistory, taskId]);
+	/**
+	 * Route one input against tmux copy-mode: typed text leaves history first, while cancel,
+	 * navigation and search input — and text after such a command — stays with tmux.
+	 */
+	const prepareInputForHistory = useCallback((typesText: boolean) => {
+		if (!copyModePending()) return;
+		if (!typesText) tmuxHistoryKeyboardRef.current = true;
+		// A history command may open a tmux search prompt that owns subsequent text.
+		else if (!tmuxHistoryKeyboardRef.current) void exitCopyModeIfNeeded(true);
+	}, [copyModePending, exitCopyModeIfNeeded]);
 	const sendUserInput = useCallback((data: string) => {
+		const send = () => {
+			if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data);
+		};
+		prepareInputForHistory(inputTypesText(data));
+		if (copyModeExitRef.current) void copyModeExitRef.current.then(send);
+		else send();
+	}, [prepareInputForHistory]);
+	/** A dropped path or attachment always leaves history first, like a paste. */
+	const sendPlacedInput = useCallback((data: string) => {
 		const send = () => {
 			if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data);
 		};
@@ -1350,16 +1378,10 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 							// (see terminal-key-overrides.ts); onData keeps the latency probe fed.
 							term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
 								// Let tmux consume history cancel/navigation keys before they can reach the agent.
-								const resumesInput = !event.metaKey && !event.ctrlKey && !event.altKey && (
-									(event.key.length === 1 && !["q", "/", " "].includes(event.key)) ||
-									["Enter", "Backspace", "Delete"].includes(event.key)
-								);
-								if (tmuxStreamRef.current && copyModePending() && !event.metaKey &&
+								if (tmuxStreamRef.current && !event.metaKey &&
 									!["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key) &&
 									!(event.ctrlKey && event.shiftKey && event.code === "KeyC")) {
-									if (!resumesInput) tmuxHistoryKeyboardRef.current = true;
-									// A history command may open a tmux search prompt that owns subsequent text.
-									else if (!tmuxHistoryKeyboardRef.current) void exitCopyModeIfNeeded();
+									prepareInputForHistory(keyTypesText(event));
 								}
 								const seq = getTerminalKeyOverride(event, tmuxStreamRef.current);
 								if (!seq) return false;
@@ -2340,19 +2362,17 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 			if (e.key.length !== 1) return;
 			const term = termRef.current;
 			if (!term) return;
-			const type = () => {
-				try {
-					term.focus();
-					term.input(e.key, true);
-				} catch { /* disposed */ }
-			};
-			if (copyModePending()) void exitCopyModeIfNeeded().then(type);
-			else type();
+			// onData holds the key until a copy-mode exit this starts has reached tmux.
+			if (tmuxStreamRef.current) prepareInputForHistory(keyTypesText(e));
+			try {
+				term.focus();
+				term.input(e.key, true);
+			} catch { /* disposed */ }
 			e.preventDefault();
 		}
 		document.addEventListener("keydown", handleKeydown);
 		return () => document.removeEventListener("keydown", handleKeydown);
-	}, [copyModePending, exitCopyModeIfNeeded]);
+	}, [prepareInputForHistory]);
 
 	useEffect(() => {
 		function handleTerminalCopyShortcut(e: KeyboardEvent) {
@@ -2600,7 +2620,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 		function sendPathToPty(path: string) {
 			if (wsRef.current?.readyState === WebSocket.OPEN) {
 				const escaped = path.replace(/ /g, "\\ ");
-				sendUserInput(escaped);
+				sendPlacedInput(escaped);
 			}
 			try { termRef.current?.focus(); } catch { /* disposed */ }
 		}
@@ -2696,7 +2716,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 
 		container.addEventListener("paste", onPaste, { capture: true });
 		return () => container.removeEventListener("paste", onPaste, { capture: true });
-	}, [projectId, taskId, t, copyModePending, exitCopyModeIfNeeded, sendUserInput]);
+	}, [projectId, taskId, t, copyModePending, exitCopyModeIfNeeded, sendPlacedInput]);
 
 	function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
 		e.preventDefault();
@@ -2732,7 +2752,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 		if (wsRef.current?.readyState === WebSocket.OPEN) {
 			const cursor = termRef.current?.buffer?.active;
 			const line = cursor?.getLine?.((cursor.baseY ?? 0) + (cursor.cursorY ?? 0));
-			sendUserInput(spaceDroppedPaths(text, line, cursor?.cursorX ?? 0));
+			sendPlacedInput(spaceDroppedPaths(text, line, cursor?.cursorX ?? 0));
 		}
 		try { termRef.current?.focus(); } catch { /* disposed */ }
 	}

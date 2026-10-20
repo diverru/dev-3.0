@@ -36,7 +36,9 @@ terminal for everyone, with nothing in the UI saying why (h0x91b/dev-3.0#2000). 
 - The redraw jiggle now fires only for a socket's FIRST resize report (a new viewer's first
   paint), and its 16ms restore re-applies the size current when it fires. Browser QA caught
   the old shape: a new follower's own report jiggled the PTY, and the restore of the captured
-  size undid the new sizer's real resize landing inside those 16ms.
+  size undid the new sizer's real resize landing inside those 16ms. Since #2027 that same-size
+  redraw is a SIGWINCH to the tmux client instead — no PTY resize and no restore at all
+  (`decisions/2026/10/20/redraw-terminal-without-synthetic-resize.md`).
 - Native is unchanged: the writer lease still owns its geometry.
 
 ## Risks

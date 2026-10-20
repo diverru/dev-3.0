@@ -1747,9 +1747,9 @@ function publishSharedSizing(session: PtySession, sizer: any): void {
  * most recently ACTIVE visible viewer wins (`pickSizingViewer`), and every
  * other viewer is told to render at that geometry. Native: the writer wins.
  *
- * `repaintUnchanged` asks for the redraw jiggle when the size does not change —
- * wanted for a socket's first resize report (a new viewer needs its first
- * paint), not for later reports or presence signals.
+ * `repaintUnchanged` asks for a same-size client redraw when the size does not
+ * change — wanted for a socket's first resize report (a new viewer needs its
+ * first paint), not for later reports or presence signals.
  */
 function applyClientSizes(session: PtySession, repaintUnchanged = true): void {
 	const term = sessionShell(session);
@@ -2469,8 +2469,8 @@ const ptyServer = Bun.serve({
 
 				// Record this client's viewport; the shared PTY follows whichever
 				// viewer was active last (applyClientSizes). Only a socket's first
-				// report needs the repaint jiggle — a follower re-reporting its own
-				// viewport renders at the shared grid and needs no redraw.
+				// report needs a repaint — a follower re-reporting its own viewport
+				// renders at the shared grid and needs no redraw.
 				if (isResizeSequence(data)) {
 					const size = parseResizeSequence(data);
 					if (size && (size.cols !== (ws as any).ptyCols || size.rows !== (ws as any).ptyRows)) {

@@ -187,37 +187,47 @@ function codexInstallLine(root: string): string {
 
 /**
  * Directories the dev3 profile must read so Codex's sandbox helper can exec its
- * own launcher: the launcher's dir and the install its symlink chain lands in.
+ * own launcher: the dir of every link in the chain, plus the install root.
  */
 export function codexInstallReadRoots(launcherPath: string): string[] {
 	try {
-		const hops: string[] = [];
+		const links = [launcherPath];
 		let current = launcherPath;
 		for (let i = 0; i < 16 && lstatSync(current).isSymbolicLink(); i++) {
 			current = resolve(dirname(current), readlinkSync(current));
-			hops.push(current);
+			links.push(current);
 		}
-		if (hops.length === 0) return guardInstallRoots([dirname(launcherPath)]);
-		hops.push(realpathSync(launcherPath));
-		const dirs = hops.map((hop) => {
-			const dir = dirname(hop);
-			return basename(dir) === "bin" ? dirname(dir) : dir;
-		});
-		const segments = dirs.map((dir) => dir.split("/"));
-		const common: string[] = [];
-		for (let i = 0; segments.every((seg) => i < seg.length && seg[i] === segments[0][i]); i++) {
-			common.push(segments[0][i]);
-		}
-		return guardInstallRoots([dirname(launcherPath), common.join("/")]);
+		const target = realpathSync(launcherPath);
+		const linkDirs = links.slice(0, -1).map((link) => dirname(link));
+		if (links.length === 1) return guardInstallRoots([dirname(launcherPath), dirname(target)]);
+		return guardInstallRoots([...linkDirs, installRootOf(links[links.length - 1], target)]);
 	} catch {
 		return [];
 	}
 }
 
+/**
+ * Only the last link and the real file decide the root, so an intermediate link
+ * (`~/.local/bin` -> Homebrew `bin`) cannot widen it to a common ancestor.
+ */
+function installRootOf(lastLink: string, target: string): string {
+	const [a, b] = [lastLink, target].map((path) => {
+		const dir = dirname(path);
+		return (basename(dir) === "bin" ? dirname(dir) : dir).split("/");
+	});
+	const common: string[] = [];
+	for (let i = 0; i < a.length && i < b.length && a[i] === b[i]; i++) common.push(a[i]);
+	return common.join("/");
+}
+
+/** Drops roots that would expose far more than the install: `/`, top-level dirs, home and its ancestors, `~/.codex`. */
 function guardInstallRoots(roots: string[]): string[] {
-	const forbidden = new Set(["", "/", homedir()]);
-	try { forbidden.add(realpathSync(homedir())); } catch { /* No home dir to compare. */ }
-	return [...new Set(roots)].filter((root) => !forbidden.has(root));
+	const homes = new Set([homedir()]);
+	try { homes.add(realpathSync(homedir())); } catch { /* No home dir to compare. */ }
+	const tooWide = (root: string) =>
+		root.split("/").filter(Boolean).length < 2 ||
+		[...homes].some((home) => home === root || home.startsWith(`${root}/`) || root === join(home, ".codex"));
+	return [...new Set(roots)].filter((root) => !tooWide(root));
 }
 
 /** Drop managed install lines that are no longer wanted, add the missing ones. */
@@ -824,15 +834,17 @@ async function probeCodex(flag: "--version" | "--help"): Promise<string | null> 
 	}
 }
 
-/** Codex install roots to grant; undefined (leave grants alone) off macOS or when none resolve. */
-export async function resolveCodexInstallRoots(): Promise<string[] | undefined> {
-	if (process.platform !== "darwin") return undefined;
+/**
+ * Codex install roots to grant; undefined (leave grants alone) off macOS or when
+ * no launcher resolves. An empty list still prunes the stale managed lines.
+ */
+export async function resolveCodexInstallRoots(platform: NodeJS.Platform = process.platform): Promise<string[] | undefined> {
+	if (platform !== "darwin") return undefined;
 	const settings = await loadSettings();
 	const override = agentBinaryPathOverride("builtin-codex", "codex", settings.agentBinaryPaths, settings.agentCustomBinaryPaths);
 	const launcher = resolveBinaryPath("codex", override).resolvedPath;
 	if (!launcher) return undefined;
-	const roots = codexInstallReadRoots(launcher);
-	return roots.length > 0 ? roots : undefined;
+	return codexInstallReadRoots(launcher);
 }
 
 /**

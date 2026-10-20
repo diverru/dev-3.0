@@ -1,10 +1,10 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { load } from "js-toml";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-import { codexInstallReadRoots, ensureCodexConfig } from "../codex-config";
+import { codexInstallReadRoots, ensureCodexConfig, resolveCodexInstallRoots } from "../codex-config";
 
 const WORKTREES = "/Users/testuser/.dev3.0/worktrees";
 const SOCKETS = "/Users/testuser/.dev3.0/sockets";
@@ -75,6 +75,77 @@ describe.skipIf(process.platform === "win32")("codexInstallReadRoots", () => {
 
 	it("returns nothing for a missing launcher", () => {
 		expect(codexInstallReadRoots(join(tmp(), "nope"))).toEqual([]);
+	});
+
+	it("does not widen the root to the Homebrew prefix when a link points at Homebrew's bin", () => {
+		const root = tmp();
+		const cask = join(root, "homebrew", "Caskroom", "codex", "0.1.0");
+		touch(join(cask, "codex"));
+		mkdirSync(join(root, "homebrew", "bin"));
+		symlinkSync("../Caskroom/codex/0.1.0/codex", join(root, "homebrew", "bin", "codex"));
+		mkdirSync(join(root, "local", "bin"), { recursive: true });
+		symlinkSync(join(root, "homebrew", "bin", "codex"), join(root, "local", "bin", "codex"));
+		expect(codexInstallReadRoots(join(root, "local", "bin", "codex"))).toEqual([
+			join(root, "local", "bin"),
+			join(root, "homebrew", "bin"),
+			cask,
+		]);
+	});
+
+	it("grants each link's dir instead of the common ancestor of unrelated trees", () => {
+		const root = tmp();
+		touch(join(root, "b", "y", "codex"));
+		mkdirSync(join(root, "a", "x"), { recursive: true });
+		mkdirSync(join(root, "c", "bin"), { recursive: true });
+		symlinkSync(join(root, "b", "y", "codex"), join(root, "a", "x", "codex"));
+		symlinkSync(join(root, "a", "x", "codex"), join(root, "c", "bin", "codex"));
+		const roots = codexInstallReadRoots(join(root, "c", "bin", "codex"));
+		expect(roots).toEqual([join(root, "c", "bin"), join(root, "a", "x"), join(root, "b", "y")]);
+		expect(roots).not.toContain(root);
+	});
+
+	it("adds the canonical dir of a plain launcher reached through a symlinked dir", () => {
+		const root = tmp();
+		touch(join(root, "real", "codex"));
+		symlinkSync(join(root, "real"), join(root, "alias"));
+		expect(codexInstallReadRoots(join(root, "alias", "codex"))).toEqual([join(root, "alias"), join(root, "real")]);
+	});
+
+	describe("with HOME pointing at a fixture", () => {
+		const savedHome = process.env.HOME;
+		afterEach(() => {
+			process.env.HOME = savedHome;
+		});
+
+		it("keeps the standalone root when an extra link sits elsewhere in home", () => {
+			const home = tmp();
+			process.env.HOME = home;
+			const launcher = standalone(home, "0.163.0");
+			mkdirSync(join(home, "bin"));
+			symlinkSync(launcher, join(home, "bin", "codex"));
+			expect(codexInstallReadRoots(join(home, "bin", "codex"))).toEqual([
+				join(home, "bin"),
+				join(home, ".local", "bin"),
+				join(home, ".codex", "packages", "standalone"),
+			]);
+		});
+
+		it("never grants home, its ancestors or ~/.codex itself", () => {
+			const home = tmp();
+			process.env.HOME = home;
+			touch(join(home, ".codex", "codex"));
+			touch(join(home, "codex"));
+			expect(codexInstallReadRoots(join(home, ".codex", "codex"))).toEqual([]);
+			expect(codexInstallReadRoots(join(home, "codex"))).toEqual([]);
+			expect(codexInstallReadRoots(join(dirname(home), "nope"))).toEqual([]);
+		});
+	});
+});
+
+describe("resolveCodexInstallRoots", () => {
+	it("leaves the grants alone off macOS", async () => {
+		expect(await resolveCodexInstallRoots("linux")).toBeUndefined();
+		expect(await resolveCodexInstallRoots("win32")).toBeUndefined();
 	});
 });
 

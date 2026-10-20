@@ -87,6 +87,15 @@ describe("installFilePathUnderlines redraw scheduling", () => {
 		handle.dispose();
 	});
 
+	it("releases the detached overlay backing store on disposal", () => {
+		const handle = install();
+		const overlay = document.querySelector<HTMLCanvasElement>('[data-role="file-path-underlines"]')!;
+		overlay.width = 2400;
+		overlay.height = 1600;
+		handle.dispose();
+		expect([overlay.width, overlay.height, overlay.parentNode]).toEqual([0, 0, null]);
+	});
+
 	it("keeps repainting under a sustained stream of triggers", () => {
 		// A debounce here starved: writes arriving faster than its delay pushed
 		// the recompute out forever, so the overlay stayed blank for the whole

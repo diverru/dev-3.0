@@ -1,5 +1,7 @@
 # Draw the terminal cursor only on frames where it changes
 
+Patch-mechanism note superseded on 2026-10-20 by `decisions/2026/10/20/release-disposed-terminal-canvas-resources.md`: dependency cleanup patches now persist across installs.
+
 ## Context
 
 Issue #1949: on Linux (WebKitGTK 2.50.4) an idle task terminal kept `WebKitWebProcess` at 40–100% CPU, and the window froze under agent output. While `cursorBlink` is on, ghostty-web 0.4.0's `CanvasRenderer.render()` repaints the cursor's whole row on every rAF frame (`if (cursorMoved || this.cursorBlink)`) and redraws the cursor on top. The blink phase only flips every 530 ms.
@@ -33,5 +35,5 @@ Measured in Docker: Ubuntu 25.04 arm64, the reporter's exact WebKitGTK 2.50.4, X
 ## Alternatives considered
 
 - **Turn blinking off (globally, or on Linux)** — measured as no cheaper than the bug, and it breaks the focus gate's erase path.
-- **Patch the vendor bundle** — lost on every ghostty-web upgrade, and the repo has no patch mechanism for it.
+- **Patch the vendor bundle** — the repo had no patch mechanism when this cursor change was evaluated.
 - **Cache `ctx.font` per cell** — reduces style work only on frames that still draw. That cost is not the dominant one here.

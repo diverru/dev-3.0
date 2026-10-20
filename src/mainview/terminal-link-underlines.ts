@@ -170,6 +170,7 @@ export function installFilePathUnderlines(options: {
 			if (frameId !== null) cancelAnimationFrame(frameId);
 			for (const sub of subscriptions) sub.dispose();
 			resizeObserver?.disconnect();
+			overlay.width = overlay.height = 0;
 			overlay.remove();
 		},
 	};

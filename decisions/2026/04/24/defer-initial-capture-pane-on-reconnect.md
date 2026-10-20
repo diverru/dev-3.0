@@ -1,6 +1,6 @@
 # 041 — Three fixes to eliminate the task-switch terminal glitch
 
-Superseded for ordinary terminal open and foreground redraw on 2026-10-20 by `decisions/2026/10/20/redraw-terminal-without-synthetic-resize.md`: refresh the attached tmux client without changing geometry. Explicit Hard Reset retains the row nudge.
+Superseded for ordinary terminal open and foreground redraw on 2026-10-20 by `decisions/2026/10/20/redraw-terminal-without-synthetic-resize.md`: signal the attached tmux client to reinitialize its terminal without changing geometry. Explicit Hard Reset retains the row nudge.
 
 ## Context
 

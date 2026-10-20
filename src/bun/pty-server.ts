@@ -1772,14 +1772,15 @@ function applyClientSizes(session: PtySession, repaintUnchanged = true): void {
 	if (session.appliedCols === minCols && session.appliedRows === minRows) {
 		// A native viewer is repainted from the journal on attach.
 		if (session.backend === "native") return;
-		// A fresh viewer needs its first paint, but without SIGWINCH, which makes
-		// inline Codex print its history again.
+		// A fresh viewer needs its first paint: reinitialize the attached client,
+		// including mouse modes, at the SAME size. Unlike resizing its PTY, this
+		// does not send SIGWINCH to the pane's app.
 		if (repaintUnchanged && session.proc) {
-			void tmux.refreshAttachedClient({
-				sessionName: session.tmuxSessionName,
-				pid: session.proc.pid,
-				socket: session.tmuxSocket,
-			}).catch((err) => log.warn("tmux viewer redraw failed", { error: String(err) }));
+			try {
+				session.proc.kill("SIGWINCH");
+			} catch (err) {
+				log.warn("tmux viewer redraw failed", { error: String(err) });
+			}
 		}
 		publishSharedSizing(session, sizer);
 		return;

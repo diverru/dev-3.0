@@ -247,6 +247,63 @@ describe.skipIf(!tmuxAvailable || !python3Available)(
 			}
 		}, 20_000);
 
+		it("remount restores mouse scrolling without resizing the pane or notifying its app", async () => {
+			const tmux = (...args: string[]) => {
+				const result = cpSpawnSync("tmux", ["-L", tmuxSocket, ...args], { env: isolatedTmuxEnv(), encoding: "utf8" });
+				expect(result.status, result.stderr).toBe(0);
+				return result.stdout.trim();
+			};
+			const winches = join(tmpDir, "scroll-winches");
+			const worker = join(tmpDir, "scroll-worker.py");
+			writeFileSync(winches, "");
+			writeFileSync(worker, [
+				"import signal",
+				`signal.signal(signal.SIGWINCH, lambda *_: open(${JSON.stringify(winches)}, 'a').write('W'))`,
+				"for i in range(200): print('history-line-' + str(i), flush=True)",
+				"print('READY-HISTORY-200', flush=True)",
+				"while True: signal.pause()",
+			].join("\n"));
+			tmux("respawn-pane", "-t", `${tmuxSession}:1.1`, "-k", `python3 -u ${worker}`);
+			await expect.poll(() => tmux("capture-pane", "-p", "-t", tmuxSession)).toContain("READY-HISTORY-200");
+			const geometry = tmux("display-message", "-p", "-t", tmuxSession, "#{pane_width}x#{pane_height}");
+			const signalsBefore = readFileSync(winches, "utf8");
+			const [clientName, clientPid] = tmux("list-clients", "-t", tmuxSession, "-F", "#{client_name} #{client_pid}").split(" ");
+			const { term, write } = await remountedTerminal();
+			try {
+				let offset = bridgeStderr.length;
+				tmux("refresh-client", "-t", clientName);
+				await expect.poll(() => bridgeStderr.slice(offset)).toContain("READY-HISTORY-200");
+				await write(bridgeStderr.slice(offset));
+				expect(term.hasMouseTracking()).toBe(false);
+
+				offset = bridgeStderr.length;
+				process.kill(Number(clientPid), "SIGWINCH");
+				await expect.poll(() => bridgeStderr.slice(offset)).toMatch(/\x1b\[\?(?:1000|1002|1006)h/);
+				await write(bridgeStderr.slice(offset));
+				expect(term.hasMouseTracking()).toBe(true);
+				expect(tmux("display-message", "-p", "-t", tmuxSession, "#{pane_width}x#{pane_height}")).toBe(geometry);
+				expect(readFileSync(winches, "utf8")).toBe(signalsBefore);
+
+				const forwarding = term.onData((data) => bridge!.stdin!.write(data, "utf8"));
+				term.attachCustomWheelEventHandler((event) => {
+					if (!term.hasMouseTracking()) return false;
+					term.input(`\x1b[<${event.deltaY < 0 ? 64 : 65};5;3M`, true);
+					return true;
+				});
+				term.element!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
+				await expect.poll(() => tmux("display-message", "-p", "-t", tmuxSession, "#{pane_in_mode}")).toBe("1");
+				term.element!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
+				await expect.poll(() => Number(tmux("display-message", "-p", "-t", tmuxSession, "#{scroll_position}"))).toBeGreaterThan(0);
+				offset = bridgeStderr.length;
+				tmux("send-keys", "-t", tmuxSession, "-X", "history-top");
+				await expect.poll(() => bridgeStderr.slice(offset)).toContain("history-line-0");
+				forwarding.dispose();
+			} finally {
+				tmux("send-keys", "-t", tmuxSession, "-X", "cancel");
+				term.dispose();
+			}
+		}, 10_000);
+
 		it("an intact Terminal still pastes through ghostty, wrapped exactly once", async () => {
 			const { term, sent, write } = openTerminal();
 			await write("\x1b[?2004h");

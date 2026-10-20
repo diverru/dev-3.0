@@ -29,7 +29,7 @@ import { DEFAULT_TMUX_SOCKET } from "./constants";
 import { activeTmuxConfigPath, tmuxClientCwd } from "./config";
 import { TmuxError, TmuxSpawnError, TmuxTimeoutError } from "./errors";
 import type { TmuxFormat } from "./formats";
-import { ATTACHED_CLIENT_FORMAT, PANE_ID_FORMAT, PANE_SIGHTING_FORMAT } from "./formats";
+import { PANE_ID_FORMAT, PANE_SIGHTING_FORMAT } from "./formats";
 import { removeTmuxSocketFile } from "./socket-files";
 
 type SpawnFn = typeof defaultSpawn;
@@ -313,16 +313,6 @@ export class TmuxClient {
 		} catch (err) {
 			throw new TmuxSpawnError(getTmuxBinary(), err);
 		}
-	}
-
-	/** Redraw our attached client, leaving other viewers and the pane geometry alone. */
-	async refreshAttachedClient(opts: { sessionName: string; pid: number } & SocketOpt): Promise<void> {
-		const { stdout } = await this.runChecked(opts.socket, [
-			"list-clients", "-t", opts.sessionName, "-F", ATTACHED_CLIENT_FORMAT.formatString,
-		]);
-		const client = ATTACHED_CLIENT_FORMAT.parse(stdout).find((row) => row.pid === opts.pid);
-		if (!client) return; // The attached process can exit while the request is in flight.
-		await this.runChecked(opts.socket, ["refresh-client", "-t", client.name]);
 	}
 
 	// ── Panes & windows ────────────────────────────────────────────────

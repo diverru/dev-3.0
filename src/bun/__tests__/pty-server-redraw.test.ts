@@ -11,7 +11,6 @@ vi.mock("node:fs", async (original) => ({
 }));
 
 import { spawn } from "../spawn";
-import { tmux } from "../tmux";
 import { encodeResizeSequence } from "../../shared/resize-protocol";
 
 interface WsHandlers {
@@ -30,7 +29,7 @@ const pty = await import("../pty-server");
 bun.Bun.serve = stubServe;
 const TASK_ID = "redraw-test-task";
 const terminal = { resize: vi.fn(), close: vi.fn(), write: vi.fn() };
-const redraw = vi.spyOn(tmux, "refreshAttachedClient").mockResolvedValue();
+const signal = vi.fn();
 
 function connect() {
 	const ws = { data: { url: new URL(`ws://localhost/?session=${TASK_ID}`) }, sendText: vi.fn() };
@@ -41,7 +40,7 @@ function connect() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.mocked(spawn).mockReturnValue({
-		pid: 123, terminal, kill: vi.fn(), exited: new Promise(() => {}),
+		pid: 123, terminal, kill: signal, exited: new Promise(() => {}),
 	} as never);
 	pty.createSession(TASK_ID, "project", "/tmp", "bash", {}, "test-socket");
 });
@@ -52,7 +51,7 @@ describe("tmux viewer redraw", () => {
 		const ws = connect();
 		handlers.message(ws, encodeResizeSequence(220, 50));
 		expect(terminal.resize).not.toHaveBeenCalled();
-		expect(redraw).toHaveBeenCalledWith({ sessionName: "dev3-redraw-t", pid: 123, socket: "test-socket" });
+		expect(signal).toHaveBeenCalledWith("SIGWINCH");
 	});
 
 	it("redraws after reconnect without replaying or changing geometry", () => {
@@ -63,14 +62,14 @@ describe("tmux viewer redraw", () => {
 		const next = connect();
 		handlers.message(next, encodeResizeSequence(120, 40));
 		expect(terminal.resize).not.toHaveBeenCalled();
-		expect(redraw).toHaveBeenCalledTimes(1);
+		expect(signal.mock.calls).toEqual([["SIGWINCH"]]);
 	});
 
 	it("still resizes for a real viewport change", () => {
 		const ws = connect();
 		handlers.message(ws, encodeResizeSequence(120, 40));
 		expect(terminal.resize.mock.calls).toEqual([[120, 40]]);
-		expect(redraw).not.toHaveBeenCalled();
+		expect(signal).not.toHaveBeenCalled();
 	});
 
 	it("keeps the smallest viewer size when a larger viewer connects", () => {
@@ -78,6 +77,6 @@ describe("tmux viewer redraw", () => {
 		terminal.resize.mockClear();
 		handlers.message(connect(), encodeResizeSequence(180, 60));
 		expect(terminal.resize).not.toHaveBeenCalled();
-		expect(redraw).toHaveBeenCalledTimes(1);
+		expect(signal.mock.calls).toEqual([["SIGWINCH"]]);
 	});
 });

@@ -129,12 +129,6 @@ export type TmuxFormatRow<F> = F extends TmuxFormat<infer T> ? T : never;
 
 // ── Format declarations ─────────────────────────────────────────────
 
-/** Attached process identity and its tty, for a redraw without resizing the pane. */
-export const ATTACHED_CLIENT_FORMAT = tmuxFormat()
-	.number("pid", "client_pid")
-	.string("name", "client_name")
-	.build();
-
 /** Bare pane id per line (`%N`). */
 export const PANE_ID_FORMAT = tmuxFormat().string("paneId", "pane_id").build();
 

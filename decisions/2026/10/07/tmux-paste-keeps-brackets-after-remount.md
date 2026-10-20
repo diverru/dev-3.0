@@ -14,7 +14,9 @@ client, a raw-mode pane reader, Claude Code 2.1.292 and Codex 0.160.1:
 
 - tmux sends `ESC [?2004h` to its client exactly once, at attach, whether or not any pane asked for
   it, and never sends `2004l` — not when a pane toggles the mode, not on split/select.
-- A resize (the row-nudge dance) and `refresh-client` repaint and re-send mouse modes, but never 2004.
+- A resize (the row-nudge dance) re-sends mouse modes but not 2004. The original claim that
+  `refresh-client` also re-sends mouse modes was disproved on 2026-10-20; it only repaints. See
+  `decisions/2026/10/20/redraw-terminal-without-synthetic-resize.md`.
 - tmux strips the markers itself for a pane that did not enable 2004 (pane gets the exact bare
   bytes) and forwards them byte-exact to a pane that did.
 - A ghostty Terminal loses the flag on construction (remount), RIS and `term.reset()` (Hard Reset).

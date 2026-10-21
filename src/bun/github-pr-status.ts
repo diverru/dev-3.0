@@ -1,7 +1,7 @@
 import type { GitHubAccount, PRInfo, Project } from "../shared/types";
 import { createLogger } from "./logger";
 import { countUnresolvedReviewThreads } from "./rpc-handlers/pr-status";
-import { GitHubGraphQLError, isNotAGitHubRepoError, queryGitHub, resolveGitHubAccount, runGitHub } from "./github";
+import { GitHubGraphQLError, isNotAGitHubRepoError, queryGitHub, resolveGitHubAccount, runGitHub, type PullRequestSnapshot } from "./github";
 
 const log = createLogger("github-pr-status");
 const STATUS_TTL_MS = 60_000;
@@ -31,11 +31,12 @@ type ApiPR = Omit<GitHubPullRequestSummary, "statusCheckRollup" | "unresolvedCou
 	commits?: { nodes: { commit: { oid: string; statusCheckRollup: { contexts: Page<Check> } | null } }[] };
 	reviewThreads?: Page<{ isResolved: boolean }>;
 };
+type PRResponse = { repository: { open?: { nodes: ApiPR[] }; known?: ApiPR | null } };
 
 type Repository = { owner: string; name: string; host: string };
 type Probe = { pr: GitHubPullRequestSummary | null; isGitHub: boolean; checkedAt: number };
 type Entry<T> = { at: number; promise: Promise<T> };
-const repositories = new Map<string, Entry<Repository | null>>();
+const repositories = new Map<string, Entry<Repository | null> & { lastResolved?: Repository | null }>();
 const statuses = new Map<string, Entry<Probe | null>>();
 const snapshots = new Map<string, { at: number; pr: GitHubPullRequestSummary }>();
 const lists = new Map<string, Entry<PRInfo[]>>();
@@ -75,9 +76,10 @@ function identity(account: GitHubAccount, repository: Repository): string {
 	return `${account.host}\0${account.login}\0${repository.owner}/${repository.name}`;
 }
 
-async function resolveRepository(project: Selection, cwd: string, account: GitHubAccount, timeoutMs: number): Promise<Repository | null> {
+async function resolveRepository(project: Selection, cwd: string, account: GitHubAccount, timeoutMs: number, forMergeProof = false): Promise<Repository | null> {
 	const key = `${account.host}\0${account.login}\0${cwd}`;
 	const cached = repositories.get(key);
+	if (forMergeProof && cached?.lastResolved !== undefined) return cached.lastResolved;
 	if (cached && Date.now() - cached.at < REPOSITORY_TTL_MS) return await cached.promise;
 	const promise = (async () => {
 		// gh resolves SSH aliases and its selected base repository; parsing origin loses both.
@@ -94,10 +96,13 @@ async function resolveRepository(project: Selection, cwd: string, account: GitHu
 		}
 		return { owner, name, host };
 	})();
-	const entry = { at: Date.now(), promise };
+	const entry = { at: Date.now(), promise, lastResolved: cached?.lastResolved };
 	repositories.set(key, entry);
-	try { return await promise; } catch (error) {
-		if (repositories.get(key) === entry) repositories.delete(key);
+	try { return entry.lastResolved = await promise; } catch (error) {
+		if (repositories.get(key) === entry) {
+			if (cached) repositories.set(key, cached);
+			else repositories.delete(key);
+		}
 		throw error;
 	}
 }
@@ -155,6 +160,37 @@ async function withinDeadline<T>(fn: (signal: AbortSignal, deadline: number) => 
 	finally { clearTimeout(timer!); }
 }
 
+async function queryPR(account: GitHubAccount, query: string, variables: Record<string, unknown>, signal: AbortSignal): Promise<PRResponse> {
+	try { return await queryGitHub<PRResponse>(account, query, variables, signal); }
+	catch (error) {
+		if (error instanceof GitHubGraphQLError && error.data && error.errors.length > 0
+			&& error.errors.every((item) => item.type === "NOT_FOUND" && item.path?.length === 2 && item.path[0] === "repository" && item.path[1] === "known")) {
+			return error.data as PRResponse;
+		}
+		throw error;
+	}
+}
+
+export async function getPullRequestSnapshot(project: Selection, cwd: string, prNumber: number): Promise<PullRequestSnapshot | null> {
+	try {
+		return await withinDeadline(async (signal, deadline) => {
+			const account = await resolveGitHubAccount(project);
+			signal.throwIfAborted();
+			const repo = await resolveRepository(project, cwd, account, deadline - Date.now(), true);
+			signal.throwIfAborted();
+			if (!repo) return null;
+			const cached = snapshots.get(`${identity(account, repo)}#${prNumber}`)?.pr;
+			// MERGED is immutable; only rich CI/review status needs to expire.
+			if (cached?.state === "MERGED") return { state: cached.state, headRefName: cached.headRefName };
+			const result = await readTaskPullRequest(project, cwd, "", prNumber, { timeoutMs: deadline - Date.now() });
+			return result?.pr ? { state: result.pr.state, headRefName: result.pr.headRefName } : null;
+		}, 15_000);
+	} catch (error) {
+		log.warn("PR snapshot lookup failed", { pr: prNumber, error: String(error) });
+		return null;
+	}
+}
+
 export async function readTaskPullRequest(
 	project: Selection,
 	cwd: string,
@@ -182,13 +218,11 @@ export async function readTaskPullRequest(
 				let data;
 				const variables = { owner: repo.owner, name: repo.name, branch, number: prNumber ?? 0, byBranch: !!branch, known: prNumber != null };
 				try {
-					data = await queryGitHub<{ repository: { open?: { nodes: ApiPR[] }; known?: ApiPR | null } }>(
-						account, PR_QUERY, variables, signal,
-					);
+					data = await queryPR(account, PR_QUERY, variables, signal);
 				} catch (error) {
 					if (!(error instanceof GitHubGraphQLError)) throw error;
 					signal.throwIfAborted();
-					data = await queryGitHub<{ repository: { open?: { nodes: ApiPR[] }; known?: ApiPR | null } }>(account, PR_METADATA_QUERY, variables, signal);
+					data = await queryPR(account, PR_METADATA_QUERY, variables, signal);
 				}
 				const raw = data.repository.open?.nodes[0] ?? data.repository.known;
 				if (prNumber != null && !raw) throw new Error("GitHub did not return the saved pull request");
@@ -201,10 +235,12 @@ export async function readTaskPullRequest(
 			statuses.set(key, entry);
 			try {
 				const result = await promise;
+				entry.at = result.checkedAt;
 				if (result.pr && result.pr.headRefName === branch) statuses.set(`${repoKey}\0${branch}\0${result.pr.number}`, entry);
 				return result;
-			} finally {
-				entry.at = Date.now();
+			} catch (error) {
+				if (statuses.get(key) === entry) statuses.delete(key);
+				throw error;
 			}
 		}, options?.timeoutMs ?? 15_000);
 	} catch (error) {
@@ -228,7 +264,11 @@ export async function listOpenPullRequests(project: Selection, cwd: string): Pro
 			  pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url headRefName } }
 			} }`, { owner: repo.owner, name: repo.name }, signal,
 		).then((data) => data.repository.pullRequests.nodes);
-		lists.set(key, { at: Date.now(), promise });
-		return promise;
+		const entry = { at: Date.now(), promise };
+		lists.set(key, entry);
+		try { return await promise; } catch (error) {
+			if (lists.get(key) === entry) lists.delete(key);
+			throw error;
+		}
 	}, 15_000);
 }

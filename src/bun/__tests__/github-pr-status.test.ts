@@ -5,7 +5,9 @@ const query = vi.fn();
 const run = vi.fn();
 vi.mock("../github", () => ({
 	queryGitHub: (...args: unknown[]) => query(...args),
-	GitHubGraphQLError: class extends Error {},
+	GitHubGraphQLError: class extends Error {
+		constructor(message: string, readonly errors: { type?: string; path?: (string | number)[] }[] = [], readonly data?: unknown) { super(message); }
+	},
 	runGitHub: (...args: unknown[]) => run(...args),
 	resolveGitHubAccount: vi.fn(async (project) => ({ ...account, host: project.githubAuthHost ?? account.host, login: project.githubAuthLogin ?? account.login })),
 	isNotAGitHubRepoError: (result: { stderr: string }) => result.stderr.includes("no git remotes"),
@@ -123,7 +125,7 @@ describe("shared GraphQL PR reads", () => {
 		run.mockResolvedValue({ ok: true, stdout: JSON.stringify({ nameWithOwner: "owner/repo", url: "https://github.com/owner/repo" }) });
 		expect(await readTaskPullRequest({}, "/repo", "feat/work", 42)).toBeNull();
 		expect(await readTaskPullRequest({}, "/repo", "feat/work", 42)).toBeNull();
-		expect(query).toHaveBeenCalledTimes(1);
+		expect(query).toHaveBeenCalledTimes(2);
 	});
 
 	it("distinguishes no open PR from an unavailable saved PR", async () => {
@@ -131,6 +133,29 @@ describe("shared GraphQL PR reads", () => {
 		query.mockResolvedValue({ repository: { open: { nodes: [] }, known: null } });
 		expect(await readTaskPullRequest({}, "/repo", "feat/work")).toEqual({ pr: null, isGitHub: true, checkedAt: expect.any(Number) });
 		expect(await readTaskPullRequest({}, "/repo", "feat/work", 42)).toBeNull();
+	});
+
+	it("retries a failed read on the next poll instead of caching its rejection", async () => {
+		const { readTaskPullRequest } = await import("../github-pr-status");
+		query.mockRejectedValueOnce(new Error("temporary outage"));
+		expect(await readTaskPullRequest({}, "/repo", "feat/work", 42)).toBeNull();
+		expect((await readTaskPullRequest({}, "/repo", "feat/work", 42))?.pr?.number).toBe(42);
+		expect(query).toHaveBeenCalledTimes(2);
+	});
+
+	it("retains branch discovery when only the saved PR number is not found", async () => {
+		const { readTaskPullRequest } = await import("../github-pr-status");
+		const { GitHubGraphQLError } = await import("../github");
+		query.mockRejectedValue(new GitHubGraphQLError("No such PR", [{ type: "NOT_FOUND", path: ["repository", "known"] }], { repository: { open: { nodes: [pr()] }, known: null } }));
+		expect((await readTaskPullRequest({}, "/repo", "feat/work", 999))?.pr?.number).toBe(42);
+		expect(query).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not accept partial branch data with unrelated GraphQL errors", async () => {
+		const { readTaskPullRequest } = await import("../github-pr-status");
+		const { GitHubGraphQLError } = await import("../github");
+		query.mockRejectedValue(new GitHubGraphQLError("Cannot read branch PRs", [{ type: "FORBIDDEN", path: ["repository", "open"] }], payload()));
+		expect(await readTaskPullRequest({}, "/repo", "feat/work", 999)).toBeNull();
 	});
 
 	it("paginates all CI contexts against the same commit and all review threads", async () => {
@@ -163,7 +188,7 @@ describe("shared GraphQL PR reads", () => {
 		const { readTaskPullRequest } = await import("../github-pr-status");
 		const { GitHubGraphQLError } = await import("../github");
 		const { commits: _, reviewThreads: __, ...metadata } = pr();
-		query.mockRejectedValueOnce(new GitHubGraphQLError("Resource not accessible by personal access token"))
+		query.mockRejectedValueOnce(new GitHubGraphQLError("Resource not accessible by personal access token", []))
 			.mockResolvedValueOnce({ repository: { open: { nodes: [metadata] } } });
 		const result = await readTaskPullRequest({}, "/repo", "feat/work", 42);
 		expect(result?.pr).toMatchObject({ number: 42, state: "OPEN", statusCheckRollup: null, unresolvedCount: null });
@@ -195,5 +220,46 @@ describe("shared GraphQL PR reads", () => {
 		query.mockResolvedValue({ repository: { pullRequests: { nodes: [{ number: 42, url: "u", headRefName: "b" }] } } });
 		await Promise.all([listOpenPullRequests({}, "/repo"), listOpenPullRequests({}, "/repo")]);
 		expect(query).toHaveBeenCalledTimes(1);
+	});
+
+	it("retries board discovery after an outage without waiting for the cache TTL", async () => {
+		const { listOpenPullRequests } = await import("../github-pr-status");
+		query.mockRejectedValueOnce(new Error("temporary outage")).mockResolvedValue({ repository: { pullRequests: { nodes: [{ number: 42, headRefName: "feat/work", url: "https://github.com/owner/repo/pull/42" }] } } });
+		await expect(listOpenPullRequests({}, "/repo")).rejects.toThrow("temporary outage");
+		await expect(listOpenPullRequests({}, "/repo")).resolves.toMatchObject([{ number: 42 }]);
+		expect(query).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves merged proof after repository discovery expires and fails, while rich CI still refreshes", async () => {
+		vi.useFakeTimers(); vi.setSystemTime(0);
+		const { getPullRequestSnapshot, readTaskPullRequest } = await import("../github-pr-status");
+		query.mockResolvedValue({ repository: { known: pr({ state: "MERGED" }) } });
+		expect(await getPullRequestSnapshot({}, "/repo", 42)).toEqual({ state: "MERGED", headRefName: "feat/work" });
+		vi.setSystemTime(5 * 60_000 + 1);
+		run.mockResolvedValue({ ok: false, stderr: "offline" });
+		expect(await readTaskPullRequest({}, "/repo", "", 42)).toBeNull();
+		expect(await getPullRequestSnapshot({}, "/repo", 42)).toEqual({ state: "MERGED", headRefName: "feat/work" });
+		run.mockResolvedValue({ ok: true, stdout: JSON.stringify({ nameWithOwner: "owner/repo", url: "https://github.com/owner/repo" }) });
+		query.mockResolvedValue({ repository: { known: pr({ state: "MERGED", commits: { nodes: [] } }) } });
+		expect((await readTaskPullRequest({}, "/repo", "", 42))?.pr?.statusCheckRollup).toEqual([]);
+		expect(query).toHaveBeenCalledTimes(2);
+	});
+
+	it("retains merged proof during a concurrent failing repository refresh", async () => {
+		vi.useFakeTimers(); vi.setSystemTime(0);
+		const { getPullRequestSnapshot, readTaskPullRequest } = await import("../github-pr-status");
+		query.mockResolvedValue({ repository: { known: pr({ state: "MERGED" }) } });
+		await getPullRequestSnapshot({}, "/repo", 42);
+		vi.setSystemTime(5 * 60_000 + 1);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		run.mockImplementationOnce(async () => { await gate; return { ok: false, stderr: "offline" }; });
+		const rich = readTaskPullRequest({}, "/repo", "", 42);
+		await vi.advanceTimersByTimeAsync(0);
+		const proof = getPullRequestSnapshot({}, "/repo", 42);
+		await vi.advanceTimersByTimeAsync(0);
+		release();
+		expect(await rich).toBeNull();
+		expect(await proof).toEqual({ state: "MERGED", headRefName: "feat/work" });
 	});
 });

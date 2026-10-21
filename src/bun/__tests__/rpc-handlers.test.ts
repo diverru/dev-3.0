@@ -6386,6 +6386,36 @@ describe("handlers.getBranchStatus", () => {
 		expect(push).not.toHaveBeenCalledWith("taskPrStatus", expect.anything());
 	});
 
+	it.each(["settings read", "status publication"])("keeps a discovered PR when %s fails", async (failure) => {
+		const project = makeProject();
+		const task = makeTask({ status: "in-progress", worktreePath: "/tmp/wt", branchName: "feat/login" });
+		const prUrl = "https://github.com/test/repo/pull/42";
+		vi.mocked(data.getProject).mockResolvedValue(project);
+		vi.mocked(data.getTask).mockResolvedValue(task);
+		vi.mocked(data.updateTask).mockResolvedValue({ ...task, prNumber: 42, prUrl });
+		vi.mocked(loadSettings).mockResolvedValue({} as GlobalSettings);
+		if (failure === "settings read") vi.mocked(loadSettings).mockRejectedValueOnce(new Error("Settings unavailable"));
+		else vi.mocked(data.loadTasks).mockRejectedValueOnce(new Error("Task status unavailable"));
+		vi.mocked(git.getCurrentBranch).mockResolvedValue("feat/login");
+		vi.mocked(git.getBranchStatus).mockResolvedValue({ ahead: 1, behind: 0, baseUnreachable: false });
+		vi.mocked(git.getUncommittedChanges).mockResolvedValue({ insertions: 0, deletions: 0 });
+		vi.mocked(git.getUnpreservedCount).mockResolvedValue(0);
+		vi.mocked(git.getBranchDiffStats).mockResolvedValue({ files: 0, insertions: 0, deletions: 0, fileStats: [] });
+		vi.mocked(git.isContentMergedInto).mockResolvedValue(false);
+		vi.mocked(github.findOpenPullRequest).mockResolvedValue({
+			pr: { number: 42, url: prUrl, title: null, author: null }, isGitHub: true,
+			status: {
+				number: 42, url: prUrl, title: "Change", state: "OPEN", headRefName: "feat/login", headRefOid: "sha", isDraft: false,
+				autoMergeRequest: null, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, author: null,
+				statusCheckRollup: [], unresolvedCount: 0,
+			},
+		});
+
+		await expect(handlers.getBranchStatus({ taskId: task.id, projectId: project.id })).resolves.toMatchObject({
+			prNumber: 42, prUrl, prState: "OPEN",
+		});
+	});
+
 	it("persists a PR identity discovered by task branch status", async () => {
 		const project = makeProject();
 		const task = makeTask({ worktreePath: "/tmp/wt", branchName: "feat/login" });

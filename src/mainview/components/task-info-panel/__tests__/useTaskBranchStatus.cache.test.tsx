@@ -6,9 +6,10 @@ import { clearBranchStatusCache } from "../branchStatusCache";
 import { useTaskBranchStatus } from "../useTaskBranchStatus";
 
 const getBranchStatus = vi.fn();
+const refreshTaskPrStatus = vi.fn().mockResolvedValue({ outcome: "updated" });
 
 vi.mock("../../../rpc", () => ({
-	api: { request: { getBranchStatus: (...args: unknown[]) => getBranchStatus(...args) } },
+	api: { request: { getBranchStatus: (...args: unknown[]) => getBranchStatus(...args), refreshTaskPrStatus: (...args: unknown[]) => refreshTaskPrStatus(...args) } },
 }));
 
 vi.mock("../../../toast", () => ({ toast: { info: vi.fn(), error: vi.fn() } }));
@@ -182,6 +183,30 @@ describe("useTaskBranchStatus — poll failure", () => {
 			expect(result.current.refreshingStatus).toBe(false);
 			expect(result.current.statusError).toContain("timed out after 45 s");
 		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+
+describe("useTaskBranchStatus — PR freshness", () => {
+	it("refreshes rich PR status every minute while a task stays open", async () => {
+		vi.useFakeTimers();
+		const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+		vi.clearAllMocks();
+		clearBranchStatusCache();
+		getBranchStatus.mockResolvedValue({ ...statusFor(3), prNumber: 42 });
+		const view = renderForTask({ ...taskWithId("pr-task"), prNumber: 42 });
+		try {
+			await act(async () => {});
+			expect(refreshTaskPrStatus).toHaveBeenCalledTimes(1);
+			await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+			expect(refreshTaskPrStatus).toHaveBeenCalledTimes(2);
+			await act(async () => { await view.result.current.handleRefreshStatus(); });
+			expect(refreshTaskPrStatus).toHaveBeenCalledTimes(3);
+		} finally {
+			view.unmount();
+			random.mockRestore();
 			vi.useRealTimers();
 		}
 	});

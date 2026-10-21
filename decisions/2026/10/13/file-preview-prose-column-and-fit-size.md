@@ -1,5 +1,7 @@
 # File preview: prose column, breakout blocks, content-hugging size
 
+Superseded on 2026-10-21 by `decisions/2026/10/21/file-preview-wider-prose-measure.md`: the fit-size measure is now 42rem (about 95 characters), not 32rem.
+
 ## Context
 PR #1954 made the file preview fill the screen and dropped the `max-w-[70ch]` wrapper around rendered Markdown, so a short note stretched into one ~200-character line across a giant empty dialog. The fix had to keep tables and code wide without bringing back a narrow box for everything.
 

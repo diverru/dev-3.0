@@ -584,9 +584,11 @@
    tables, fences, diagrams and images may break out to the full width. A narrow
    wide-block still spans the measure so its left edge lines up with the prose;
    whatever still overflows scrolls inside that one block, never the document.
-   Block layout (not grid) so vertical margins keep collapsing as before. */
+   Block layout (not grid) so vertical margins keep collapsing as before.
+   42rem (~95 characters): the fit dialog is already capped at 60rem, so a classic
+   70-character column left a third of it empty. */
 .dev3-file-preview-md .dev3-md-doc {
-	--dev3-prose-measure: 32rem;
+	--dev3-prose-measure: 42rem;
 }
 /* Expanded is an explicit "use the screen": the column widens to ~115 characters. */
 [data-size="expanded"] .dev3-file-preview-md .dev3-md-doc {

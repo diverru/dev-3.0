@@ -12896,14 +12896,25 @@ describe("refreshTaskPrStatus outcome", () => {
 			expect(await handlers.refreshTaskPrStatus({ taskId: task.id, projectId: project.id })).toEqual({ outcome: "unavailable" });
 		});
 
-		it("reports not-found when the stored PR belongs to another branch", async () => {
+		it.each(["OPEN", "MERGED", "CLOSED"])("refreshes the saved %s PR after the task moves to a follow-up branch without promoting or completing it", async (state) => {
 			const { project, task } = prepare();
-			vi.mocked(github.runGitHub).mockImplementation(async (_project, _cwd, args) => (
-				args.includes("list")
-					? { ok: true, stdout: "[]", stderr: "", code: 0 }
-					: { ok: true, stdout: JSON.stringify({ number: 42, url: prUrl, state: "MERGED", headRefName: "someone/else" }), stderr: "", code: 0 }
-			));
-			expect(await handlers.refreshTaskPrStatus({ taskId: task.id, projectId: project.id })).toEqual({ outcome: "not-found" });
+			const push = vi.fn();
+			setPushMessage(push);
+			vi.mocked(github.runGitHub).mockImplementation(async (_project, _cwd, args) => {
+				const payload = args.includes("list") ? [] : args.includes("view")
+					? { number: 42, url: prUrl, state, headRefName: "earlier/branch", headRefOid: "abc123", isDraft: false, statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }
+					: { data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } };
+				return { ok: true, stdout: JSON.stringify(payload), stderr: "", code: 0 };
+			});
+			expect(await handlers.refreshTaskPrStatus({ taskId: task.id, projectId: project.id })).toEqual({ outcome: "updated" });
+			expect(data.updateTask).toHaveBeenCalledWith(project, task.id, expect.objectContaining({
+				prStatusCache: expect.objectContaining({ mergeState: expect.objectContaining({ state }) }),
+			}));
+			expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ mergeState: expect.objectContaining({ state }) }));
+			expect(push).not.toHaveBeenCalledWith("branchMerged", expect.anything());
+			expect(push).not.toHaveBeenCalledWith("cliAttention", expect.anything());
+			expect(push).not.toHaveBeenCalledWith("cliAttention", expect.anything());
+			expect(data.updateTask).not.toHaveBeenCalledWith(project, task.id, expect.objectContaining({ status: expect.anything() }));
 		});
 
 		it("reports skipped for a finished task", async () => {
@@ -13011,7 +13022,7 @@ it("uses the GraphQL review-thread page and persists the PR identity", async () 
 		}));
 	});
 
-	it("polls pending CI at the active one-minute cadence, then backs off when settled", async () => {
+	it("keeps polling every minute after CI settles so a later merge is detected", async () => {
 		vi.useFakeTimers();
 		try {
 			const { task } = setup({ status: "review-by-colleague" });
@@ -13043,8 +13054,44 @@ it("uses the GraphQL review-thread page and persists the PR identity", async () 
 
 			vi.setSystemTime(120_000);
 			await checkOpenPRsForPromotion();
-			expect(github.runGitHub).toHaveBeenCalledTimes(2);
+			expect(github.runGitHub).toHaveBeenCalledTimes(3);
 			expect(task.id).toBe("task-1");
+		} finally {
+			setAppForeground(false);
+			setActiveContext({ projectId: null, taskId: null });
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		[true, "MERGED", 60_000], [true, "CLOSED", 60_000],
+		[false, "MERGED", 300_000], [false, "CLOSED", 300_000],
+	])("refreshes a board PR after %s foreground / %s within %s ms", async (foreground, state, delay) => {
+		vi.useFakeTimers();
+		try {
+			const { task } = setup({ status: "in-progress", prNumber: 42, prUrl: "https://example/pr/42", manualCompletion: true });
+			let currentState = "OPEN";
+			vi.mocked(git.isWorktreeDirty).mockResolvedValue(true);
+			vi.mocked(github.runGitHub).mockImplementation(async (_project, _cwd, args) => {
+				const pr = {
+					number: 42, url: task.prUrl, headRefName: "dev3/my-feature", state: currentState, isDraft: false,
+					statusCheckRollup: [{ name: "build", status: "COMPLETED", conclusion: currentState === "OPEN" ? "FAILURE" : "SUCCESS" }],
+				};
+				return { ok: true, stdout: JSON.stringify(args[1] === "list" ? currentState === "OPEN" ? [pr] : [] : pr), stderr: "", code: 0 };
+			});
+			const push = vi.fn();
+			setPushMessage(push);
+			setAppForeground(foreground);
+			setActiveContext({ projectId: "proj-1", taskId: null });
+			vi.setSystemTime(0);
+			await checkOpenPRsForPromotion();
+			expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ ciStatus: "failure", mergeState: expect.objectContaining({ state: "OPEN" }) }));
+			currentState = state;
+			for (let now = 60_000; now <= delay; now += 60_000) {
+				vi.setSystemTime(now);
+				await checkOpenPRsForPromotion();
+			}
+			expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ ciStatus: "success", mergeState: expect.objectContaining({ state }) }));
 		} finally {
 			setAppForeground(false);
 			setActiveContext({ projectId: null, taskId: null });

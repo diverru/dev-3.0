@@ -542,6 +542,7 @@ async function pollTaskPrStatus(project: Project, task: Task, suggestCompletion:
 	}
 	let pr = Array.isArray(prs) && prs.length > 0 ? prs[0] : null;
 	let isOpenPr = pr !== null;
+	let matchesBranch = true;
 	if (!pr && task.prNumber != null) {
 		// An open-list lookup stops finding the PR after merge. Use the sticky
 		// number to fetch that exact PR so its URL and terminal state remain
@@ -557,17 +558,10 @@ async function pollTaskPrStatus(project: Project, task: Task, suggestCompletion:
 				const parsed = JSON.parse(knownPrResult.stdout);
 				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 					const known = parsed as GitHubPullRequestSummary;
-					// The stored number survives a branch rename, and a task grown out
-					// of a review task inherits the reviewed PR's number. Either way it
-					// can name somebody else's PR — take it only if its head is us.
-					if (typeof known.headRefName === "string" && known.headRefName !== branchName) {
-						log.info("Ignoring stored PR from a different branch", {
-							taskId: task.id.slice(0, 8), pr: task.prNumber, prHead: known.headRefName, branch: branchName,
-						});
-						return NO_PR;
-					}
+					matchesBranch = typeof known.headRefName !== "string" || known.headRefName === branchName;
+					// Saved PR history stays fresh across branch changes; lifecycle actions still require ownership.
 					pr = known;
-					isOpenPr = typeof pr.state === "string" && pr.state.toUpperCase() === "OPEN";
+					isOpenPr = matchesBranch && typeof pr.state === "string" && pr.state.toUpperCase() === "OPEN";
 				}
 			} catch {
 				return null;
@@ -630,7 +624,7 @@ async function pollTaskPrStatus(project: Project, task: Task, suggestCompletion:
 
 	// Raise the bell / native notification only on a *transition* to a new
 	// worthy signal. Unresolved-thread changes deliberately stay passive.
-	const signalKey = computeSignalKey(ciStatus, reviewState);
+	const signalKey = matchesBranch ? computeSignalKey(ciStatus, reviewState) : null;
 	const signalReason = signalKey ? reasonForSignal(ciStatus, reviewState) : undefined;
 	const isOpenNonDraft = isOpenPr && isDraft === false;
 	if (isOpenNonDraft && task.status === "review-by-user") {
@@ -662,7 +656,7 @@ async function pollTaskPrStatus(project: Project, task: Task, suggestCompletion:
 			log.warn("PR watch evaluation failed", { taskId: task.id.slice(0, 8), error: String(err) });
 		}
 	}
-	if (mergeState.state === "MERGED" && await mergedPrCoversHead(project, task, pr)) {
+	if (matchesBranch && mergeState.state === "MERGED" && await mergedPrCoversHead(project, task, pr)) {
 		const fingerprint = await getMergeCompletionFingerprint(task, branchName);
 		await dispatchLifecycleFinding(project, task, {
 			type: "mergeDetected",

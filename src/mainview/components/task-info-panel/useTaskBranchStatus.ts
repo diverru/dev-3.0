@@ -175,7 +175,7 @@ export function useTaskBranchStatus({
 		if (!canShowStatus || prNumber == null) return;
 		return startVisibilityAwarePoll({
 			fn: async () => {
-				await api.request.refreshTaskPrStatus({ taskId: task.id, projectId: project.id }).catch(() => {});
+				await api.request.refreshTaskPrStatus({ taskId: task.id, projectId: project.id, force: false }).catch(() => {});
 			},
 			intervalMs: 60_000,
 		});
@@ -415,14 +415,18 @@ export function useTaskBranchStatus({
 
 		setRefreshingStatus(true);
 		try {
-			const status = await requestBranchStatus({
+			const [status] = await Promise.all([requestBranchStatus({
 				taskId: task.id,
 				projectId: project.id,
 				compareRef: compareRef || undefined,
 				refresh: true,
-			}, BRANCH_STATUS_REFRESH_TIMEOUT_MS);
+			}, BRANCH_STATUS_REFRESH_TIMEOUT_MS),
+				task.prNumber != null
+					? api.request.refreshTaskPrStatus({ taskId: task.id, projectId: project.id })
+					: Promise.resolve(),
+			]);
 			applyStatus(cacheKey, status);
-			if (status.prNumber != null || task.prNumber != null) await api.request.refreshTaskPrStatus({ taskId: task.id, projectId: project.id });
+			if (status.prNumber != null && task.prNumber == null) await api.request.refreshTaskPrStatus({ taskId: task.id, projectId: project.id, force: false });
 			// A manual click is a force re-check: re-offer completion even if the
 			// user dismissed the popup earlier for this same merged head.
 			await offerMergeCompletionIfMerged(status, { force: true });

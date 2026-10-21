@@ -274,8 +274,12 @@ async function getBranchStatusImpl(params: { taskId: string; projectId: string; 
 			});
 			if (probe.pr?.url) await persistTaskPrIdentity(project, task, probe.pr.number, probe.pr.url);
 			if (probe.status) {
-				const settings = await loadSettings();
-				await reportTaskPrStatus(project, task, branchForPush, probe.status, settings.suggestCompletingTasksAfterMerge !== false, true);
+				try {
+					const settings = await loadSettings();
+					await reportTaskPrStatus(project, task, branchForPush, probe.status, settings.suggestCompletingTasksAfterMerge !== false, true);
+				} catch (err) {
+					log.warn("PR status publication failed (non-fatal)", { taskId: task.id, error: String(err) });
+				}
 			}
 			return probe;
 		} catch (err) {

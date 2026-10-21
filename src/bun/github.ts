@@ -2,8 +2,8 @@ import type { GitHubAccount, GitHubCliStatus, Project } from "../shared/types";
 import { createLogger } from "./logger";
 import { spawn } from "./spawn";
 import { which } from "./which";
-import { readTaskPullRequest, type GitHubPullRequestSummary } from "./github-pr-status";
-export { readTaskPullRequest, listOpenPullRequests } from "./github-pr-status";
+import { getPullRequestSnapshot, readTaskPullRequest, type GitHubPullRequestSummary } from "./github-pr-status";
+export { readTaskPullRequest, listOpenPullRequests, getPullRequestSnapshot } from "./github-pr-status";
 
 const log = createLogger("github");
 
@@ -510,15 +510,6 @@ export interface PullRequestSnapshot {
 	headRefName: string;
 }
 
-export async function getPullRequestSnapshot(
-	project: ProjectGitHubSelection,
-	cwd: string,
-	prNumber: number,
-): Promise<PullRequestSnapshot | null> {
-	const result = await readTaskPullRequest(project, cwd, "", prNumber);
-	return result?.pr ? { state: result.pr.state, headRefName: result.pr.headRefName } : null;
-}
-
 /**
  * Is this exact PR merged *and* about this branch's work? A task's stored PR
  * number outlives the branch it was opened from: rename the branch, or inherit
@@ -577,9 +568,12 @@ export async function getGitHubShellExports(project: ProjectGitHubSelection): Pr
 	return lines;
 }
 
-export class GitHubGraphQLError extends Error {}
+export class GitHubGraphQLError extends Error {
+	constructor(message: string, readonly errors: { type?: string; path?: (string | number)[] }[], readonly data?: unknown) { super(message); }
+}
 
 const graphqlRetryAt = new Map<string, number>();
+const RATE_LIMIT_MESSAGE = /rate limit|abuse detection/i;
 
 export async function queryGitHub<T>(
 	account: GitHubAccount,
@@ -608,17 +602,17 @@ export async function queryGitHub<T>(
 	}
 	if (!response.ok) {
 		if (response.status === 401) tokenCache.delete(key);
-		if (response.status === 403 || response.status === 429) {
+		if (response.status === 429 || (response.status === 403 && RATE_LIMIT_MESSAGE.test(await response.text()))) {
 			graphqlRetryAt.set(key, Math.max(Date.now() + 60_000, graphqlRetryAt.get(key) ?? 0));
 		}
 		throw new Error(`GitHub GraphQL HTTP ${response.status}`);
 	}
-	const payload = await response.json() as { data?: T; errors?: { type?: string; message: string }[] };
+	const payload = await response.json() as { data?: T; errors?: { type?: string; message: string; path?: (string | number)[] }[] };
 	if (payload.errors?.length) {
-		if (payload.errors.some((error) => error.type === "RATE_LIMITED")) {
+		if (payload.errors.some((error) => error.type === "RATE_LIMITED" || RATE_LIMIT_MESSAGE.test(error.message))) {
 			graphqlRetryAt.set(key, Math.max(Date.now() + 60_000, graphqlRetryAt.get(key) ?? 0));
 		}
-		throw new GitHubGraphQLError(`GitHub GraphQL: ${payload.errors.map((error) => error.message).join("; ")}`);
+		throw new GitHubGraphQLError(`GitHub GraphQL: ${payload.errors.map((error) => error.message).join("; ")}`, payload.errors, payload.data);
 	}
 	if (!payload.data) throw new Error("GitHub GraphQL returned no data");
 	return payload.data;

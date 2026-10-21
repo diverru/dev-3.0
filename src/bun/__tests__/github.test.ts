@@ -542,6 +542,31 @@ describe("github", () => {
 			await expect(queryGitHub(account, "q", {}, AbortSignal.timeout(1000))).rejects.toThrow("Unavailable field");
 		});
 
+		it("does not rate-limit unrelated repositories after a permission-only 403", async () => {
+			vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("", { status: 403 })).mockResolvedValue(Response.json({ data: { ok: true } })));
+			const { queryGitHub } = await import("../github");
+			await expect(queryGitHub(account, "q", { name: "restricted" }, AbortSignal.timeout(1000))).rejects.toThrow("HTTP 403");
+			await expect(queryGitHub(account, "q", { name: "accessible" }, AbortSignal.timeout(1000))).resolves.toEqual({ ok: true });
+			expect(fetch).toHaveBeenCalledTimes(2);
+		});
+
+		it.each([200, 403])("backs off on a secondary rate-limit message with HTTP %s and no retry header", async (status) => {
+			const body = status === 200 ? { errors: [{ message: "You have exceeded a secondary rate limit." }] } : { message: "You have exceeded a secondary rate limit." };
+			vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(body, { status })));
+			const { queryGitHub } = await import("../github");
+			await expect(queryGitHub(account, "q", {}, AbortSignal.timeout(1000))).rejects.toThrow();
+			await expect(queryGitHub(account, "q", {}, AbortSignal.timeout(1000))).rejects.toThrow("rate limit");
+			expect(fetch).toHaveBeenCalledTimes(1);
+		});
+
+		it("preserves GraphQL error paths and partial data for the PR reader", async () => {
+			const data = { repository: { open: { nodes: [{ number: 42 }] }, known: null } };
+			const errors = [{ type: "NOT_FOUND", path: ["repository", "known"], message: "No such PR" }];
+			vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data, errors })));
+			const { queryGitHub } = await import("../github");
+			await expect(queryGitHub(account, "q", {}, AbortSignal.timeout(1000))).rejects.toMatchObject({ data, errors });
+		});
+
 		it("honors Retry-After and does not issue more requests while rate limited", async () => {
 			vi.useFakeTimers(); vi.setSystemTime(0);
 			try {
@@ -651,6 +676,20 @@ describe("github", () => {
 			const callsAfterFirst = spawnMock.mock.calls.length;
 			await isPullRequestMerged(PROJECT, "/tmp/wt", 1077, "feat/mine");
 			expect(spawnMock.mock.calls.length).toBe(callsAfterFirst);
+		});
+
+		it("keeps merged ownership proof after the rich status expires and GitHub goes offline", async () => {
+			vi.useFakeTimers(); vi.setSystemTime(0);
+			try {
+				mockGhPrView("MERGED");
+				const { isPullRequestMerged, readTaskPullRequest } = await import("../github");
+				await expect(isPullRequestMerged(PROJECT, "/tmp/wt", 1077, "feat/mine")).resolves.toBe(true);
+				vi.setSystemTime(60_001);
+				vi.mocked(fetch).mockRejectedValue(new Error("offline"));
+				expect(await readTaskPullRequest(PROJECT, "/tmp/wt", "", 1077)).toBeNull();
+				await expect(isPullRequestMerged(PROJECT, "/tmp/wt", 1077, "feat/mine")).resolves.toBe(true);
+				await expect(isPullRequestMerged(PROJECT, "/tmp/wt", 1077, "other/branch")).resolves.toBe(false);
+			} finally { vi.useRealTimers(); }
 		});
 	});
 

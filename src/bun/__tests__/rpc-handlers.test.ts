@@ -12378,7 +12378,7 @@ describe("checkOpenPRsForPromotion", () => {
 	}
 
 	function answer(overrides: Record<string, unknown> = {}) {
-		return { isGitHub: true, pr: {
+		return { isGitHub: true, checkedAt: Date.now(), pr: {
 			number: 42, url: "https://github.com/test/repo/pull/42", title: "Change", state: "OPEN",
 			headRefName: "dev3/my-feature", headRefOid: "head-sha", isDraft: false, autoMergeRequest: null,
 			mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN", reviewDecision: null, author: null,
@@ -12461,7 +12461,7 @@ describe("checkOpenPRsForPromotion", () => {
 		expect(github.readTaskPullRequest).not.toHaveBeenCalled();
 	});
 
-	it.each([null, { pr: null, isGitHub: true }, { pr: null, isGitHub: false }])("does not change tasks when GitHub returns %j", async (result) => {
+	it.each([null, { pr: null, isGitHub: true, checkedAt: 0 }, { pr: null, isGitHub: false, checkedAt: 0 }])("does not change tasks when GitHub returns %j", async (result) => {
 		setup();
 		vi.mocked(github.readTaskPullRequest).mockResolvedValue(result);
 		await checkOpenPRsForPromotion();
@@ -12564,6 +12564,31 @@ describe("checkOpenPRsForPromotion", () => {
 		expect(github.readTaskPullRequest).not.toHaveBeenCalled();
 	});
 
+	it("polls an active board every minute with nonzero scheduling jitter", async () => {
+		vi.useFakeTimers();
+		try {
+			setup({ status: "in-progress", prNumber: 42 });
+			_setScheduleRandomForTest(() => 0.5);
+			setAppForeground(true); setActiveContext({ projectId: "proj-1", taskId: null });
+			vi.mocked(github.readTaskPullRequest).mockImplementation(async () => answer());
+			vi.setSystemTime(0); await checkOpenPRsForPromotion();
+			for (let now = 15_000; now <= 120_000; now += 15_000) { vi.setSystemTime(now); await checkOpenPRsForPromotion(); }
+			expect(github.readTaskPullRequest).toHaveBeenCalledTimes(3);
+		} finally { setAppForeground(false); setActiveContext({ projectId: null, taskId: null }); vi.useRealTimers(); }
+	});
+
+	it("schedules the next board read from cache expiry instead of delaying it another minute", async () => {
+		vi.useFakeTimers();
+		try {
+			setup({ status: "in-progress", prNumber: 42 });
+			setAppForeground(true); setActiveContext({ projectId: "proj-1", taskId: null });
+			vi.mocked(github.readTaskPullRequest).mockResolvedValueOnce({ ...answer(), checkedAt: 500 }).mockResolvedValue({ ...answer(), checkedAt: 75_500 });
+			vi.setSystemTime(0); await checkOpenPRsForPromotion();
+			for (let now = 15_000; now <= 75_000; now += 15_000) { vi.setSystemTime(now); await checkOpenPRsForPromotion(); }
+			expect(github.readTaskPullRequest).toHaveBeenCalledTimes(2);
+		} finally { setAppForeground(false); setActiveContext({ projectId: null, taskId: null }); vi.useRealTimers(); }
+	});
+
 	it.each([[true, "MERGED", 60_000], [true, "CLOSED", 60_000], [false, "MERGED", 300_000], [false, "CLOSED", 300_000]] as const)(
 		"updates a board PR with foreground=%s to %s in %s ms", async (foreground, state, delay) => {
 			vi.useFakeTimers();
@@ -12577,7 +12602,7 @@ describe("checkOpenPRsForPromotion", () => {
 				vi.setSystemTime(0); await checkOpenPRsForPromotion();
 				expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ ciStatus: "failure" }));
 				currentState = state;
-				for (let now = 60_000; now <= delay; now += 60_000) { vi.setSystemTime(now); await checkOpenPRsForPromotion(); }
+				for (let now = 15_000; now <= delay; now += 15_000) { vi.setSystemTime(now); await checkOpenPRsForPromotion(); }
 				expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ ciStatus: "success", mergeState: expect.objectContaining({ state }) }));
 			} finally {
 				setAppForeground(false); setActiveContext({ projectId: null, taskId: null }); vi.useRealTimers();

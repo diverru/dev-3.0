@@ -5,6 +5,7 @@ const query = vi.fn();
 const run = vi.fn();
 vi.mock("../github", () => ({
 	queryGitHub: (...args: unknown[]) => query(...args),
+	GitHubGraphQLError: class extends Error {},
 	runGitHub: (...args: unknown[]) => run(...args),
 	resolveGitHubAccount: vi.fn(async (project) => ({ ...account, host: project.githubAuthHost ?? account.host, login: project.githubAuthLogin ?? account.login })),
 	isNotAGitHubRepoError: (result: { stderr: string }) => result.stderr.includes("no git remotes"),
@@ -117,7 +118,7 @@ describe("shared GraphQL PR reads", () => {
 	it("distinguishes a non-GitHub remote from an unavailable API", async () => {
 		const { readTaskPullRequest } = await import("../github-pr-status");
 		run.mockResolvedValue({ ok: false, stderr: "no git remotes found" });
-		expect(await readTaskPullRequest({}, "/non-github", "feat/work")).toEqual({ pr: null, isGitHub: false });
+		expect(await readTaskPullRequest({}, "/non-github", "feat/work")).toEqual({ pr: null, isGitHub: false, checkedAt: expect.any(Number) });
 		query.mockRejectedValue(new Error("offline"));
 		run.mockResolvedValue({ ok: true, stdout: JSON.stringify({ nameWithOwner: "owner/repo", url: "https://github.com/owner/repo" }) });
 		expect(await readTaskPullRequest({}, "/repo", "feat/work", 42)).toBeNull();
@@ -128,7 +129,7 @@ describe("shared GraphQL PR reads", () => {
 	it("distinguishes no open PR from an unavailable saved PR", async () => {
 		const { readTaskPullRequest } = await import("../github-pr-status");
 		query.mockResolvedValue({ repository: { open: { nodes: [] }, known: null } });
-		expect(await readTaskPullRequest({}, "/repo", "feat/work")).toEqual({ pr: null, isGitHub: true });
+		expect(await readTaskPullRequest({}, "/repo", "feat/work")).toEqual({ pr: null, isGitHub: true, checkedAt: expect.any(Number) });
 		expect(await readTaskPullRequest({}, "/repo", "feat/work", 42)).toBeNull();
 	});
 
@@ -155,7 +156,38 @@ describe("shared GraphQL PR reads", () => {
 	it("does not publish a falsely green partial check list when pagination fails", async () => {
 		const { readTaskPullRequest } = await import("../github-pr-status");
 		query.mockResolvedValueOnce(payload(pr({ commits: { nodes: [{ commit: { oid: "head", statusCheckRollup: { contexts: page([{ status: "COMPLETED", conclusion: "SUCCESS" }], "more") } } }] } }))).mockRejectedValueOnce(new Error("checks unavailable"));
-		expect(await readTaskPullRequest({}, "/repo", "feat/work", 42)).toBeNull();
+		expect((await readTaskPullRequest({}, "/repo", "feat/work", 42))?.pr).toMatchObject({ number: 42, statusCheckRollup: null });
+	});
+
+	it("keeps PR identity when the token cannot read CI, without claiming green checks", async () => {
+		const { readTaskPullRequest } = await import("../github-pr-status");
+		const { GitHubGraphQLError } = await import("../github");
+		const { commits: _, reviewThreads: __, ...metadata } = pr();
+		query.mockRejectedValueOnce(new GitHubGraphQLError("Resource not accessible by personal access token"))
+			.mockResolvedValueOnce({ repository: { open: { nodes: [metadata] } } });
+		const result = await readTaskPullRequest({}, "/repo", "feat/work", 42);
+		expect(result?.pr).toMatchObject({ number: 42, state: "OPEN", statusCheckRollup: null, unresolvedCount: null });
+		expect(query.mock.calls[1][1]).not.toContain("statusCheckRollup");
+		await readTaskPullRequest({}, "/repo", "feat/work", 42);
+		expect(query).toHaveBeenCalledTimes(2);
+	});
+
+	it("includes repository discovery in the fifteen-second request deadline", async () => {
+		vi.useFakeTimers(); vi.setSystemTime(0);
+		const { readTaskPullRequest } = await import("../github-pr-status");
+		run.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve({ ok: true, stdout: JSON.stringify({ nameWithOwner: "owner/repo", url: "https://github.com/owner/repo" }) }), 9000)));
+		query.mockImplementationOnce((_account, _query, _variables, signal) => new Promise((resolve, reject) => {
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			setTimeout(() => resolve(payload()), 12000);
+		}));
+		let finished = false;
+		const pending = readTaskPullRequest({}, "/repo", "feat/work", 42).then((result) => { finished = true; return result; });
+		await vi.advanceTimersByTimeAsync(14999);
+		expect(finished).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(finished).toBe(true);
+		expect(await pending).toBeNull();
+		expect(query.mock.calls[0][3].aborted).toBe(true);
 	});
 
 	it("coalesces board discovery within a minute", async () => {

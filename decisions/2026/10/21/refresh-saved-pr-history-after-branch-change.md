@@ -14,9 +14,9 @@ A read-only comparison of active boards with GitHub found an actual merged PR wh
 
 ## Risks
 
-The direct GraphQL query must track GitHub schema changes; announced breaking changes have at least three months of notice. Queries have a 15-second deadline, honor API rate-limit headers, and reject partial CI pages rather than report a falsely green result. A historical PR never authorizes completion of follow-up work.
+The direct GraphQL query must track GitHub schema changes; announced breaking changes have at least three months of notice. A single 15-second deadline covers auth, repository discovery, queries, and pagination. API rate-limit headers are honored; metadata-only reads preserve PR identity when CI is inaccessible, while incomplete CI becomes unknown rather than green. A historical PR never authorizes completion of follow-up work.
 
-Credentials and SSH-alias repository discovery still use `gh`, cached by the existing auth policy and a five-minute repository TTL. CI contexts are paginated against a fixed commit; unresolved-thread pages use the same PR number, and a later thread-page failure preserves PR/CI with an unknown thread count. HTTPS connections belong to Bun fetch and are independent of git SSH ControlMaster.
+Credentials and SSH-alias repository discovery still use `gh`, cached by the existing auth policy and a five-minute repository TTL. CI contexts are paginated against a fixed commit; unresolved-thread pages use the same PR number, and a later thread-page failure preserves PR/CI with an unknown thread count. The PR scheduler checks due tasks every 15 seconds and schedules from the shared sample timestamp, avoiding extra minutes caused by positive jitter or a cache hit just before expiry. HTTPS connections belong to Bun fetch and are independent of git SSH ControlMaster.
 
 ## Alternatives considered
 

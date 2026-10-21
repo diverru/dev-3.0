@@ -345,6 +345,7 @@ export function _resetPRPollerState(): void {
 }
 
 interface PolledPRStatus {
+	checkedAt?: number;
 	found: boolean;
 	ciStatus: PRCIStatus | null;
 	/** True when a PR's status was read and dispatched; false when GitHub reports no PR for this branch. */
@@ -420,8 +421,8 @@ async function pollTaskPrStatus(project: Project, task: Task, suggestCompletion:
 	});
 	if (!result) return null;
 	const pr = result.pr;
-	if (!pr) return NO_PR;
-	return reportTaskPrStatus(project, task, branchName, pr, suggestCompletion);
+	if (!pr) return { ...NO_PR, checkedAt: result.checkedAt };
+	return { ...await reportTaskPrStatus(project, task, branchName, pr, suggestCompletion), checkedAt: result.checkedAt };
 }
 
 export async function reportTaskPrStatus(
@@ -569,13 +570,18 @@ export async function checkOpenPRsForPromotion(): Promise<void> {
 		if (dueTasks.length === 0) continue;
 
 		for (const task of dueTasks) {
+			let checkedAt = now;
 			try {
 				const result = await pollTaskPrStatus(project, task, suggestCompletion);
-				if (result) lifecycleActorRuntime(task.id).prPending = result.found && result.ciStatus === "pending";
+				if (result) {
+					lifecycleActorRuntime(task.id).prPending = result.found && result.ciStatus === "pending";
+					checkedAt = result.checkedAt ?? now;
+				}
 			} catch (err) {
 				log.warn("PR check failed for task", { taskId: task.id.slice(0, 8), error: String(err) });
 			} finally {
-				lifecycleActorRuntime(task.id).prNextDue = nextDueAfterRun(now, prPollInterval(isActiveFg, task.id), scheduleRandom);
+				// Schedule from the shared sample so a cache hit cannot defer the next fetch by another minute.
+				lifecycleActorRuntime(task.id).prNextDue = checkedAt + prPollInterval(isActiveFg, task.id);
 			}
 		}
 	}

@@ -577,6 +577,8 @@ export async function getGitHubShellExports(project: ProjectGitHubSelection): Pr
 	return lines;
 }
 
+export class GitHubGraphQLError extends Error {}
+
 const graphqlRetryAt = new Map<string, number>();
 
 export async function queryGitHub<T>(
@@ -616,7 +618,7 @@ export async function queryGitHub<T>(
 		if (payload.errors.some((error) => error.type === "RATE_LIMITED")) {
 			graphqlRetryAt.set(key, Math.max(Date.now() + 60_000, graphqlRetryAt.get(key) ?? 0));
 		}
-		throw new Error(`GitHub GraphQL: ${payload.errors.map((error) => error.message).join("; ")}`);
+		throw new GitHubGraphQLError(`GitHub GraphQL: ${payload.errors.map((error) => error.message).join("; ")}`);
 	}
 	if (!payload.data) throw new Error("GitHub GraphQL returned no data");
 	return payload.data;

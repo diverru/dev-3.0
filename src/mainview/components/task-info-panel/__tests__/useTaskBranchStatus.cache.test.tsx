@@ -190,6 +190,22 @@ describe("useTaskBranchStatus — poll failure", () => {
 
 
 describe("useTaskBranchStatus — PR freshness", () => {
+	it("starts manual PR refresh alongside an unfinished git refresh", async () => {
+		vi.clearAllMocks(); clearBranchStatusCache();
+		getBranchStatus.mockResolvedValue({ ...statusFor(3), prNumber: 42 });
+		const view = renderForTask({ ...taskWithId("parallel-refresh"), prNumber: 42 });
+		await act(async () => {});
+		let finishGit!: (status: BranchStatus) => void;
+		getBranchStatus.mockImplementationOnce(() => new Promise<BranchStatus>((resolve) => { finishGit = resolve; }));
+		refreshTaskPrStatus.mockClear();
+		let refresh!: Promise<void>;
+		act(() => { refresh = view.result.current.handleRefreshStatus(); });
+		expect(refreshTaskPrStatus).toHaveBeenCalledWith({ taskId: "parallel-refresh", projectId: project.id });
+		expect(view.result.current.refreshingStatus).toBe(true);
+		await act(async () => { finishGit({ ...statusFor(3), prNumber: 42 }); await refresh; });
+		view.unmount();
+	});
+
 	it("refreshes rich PR status every minute while a task stays open", async () => {
 		vi.useFakeTimers();
 		const random = vi.spyOn(Math, "random").mockReturnValue(0.5);

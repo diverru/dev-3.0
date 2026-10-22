@@ -54,6 +54,8 @@ vi.mock("../changelog-bundled", () => ({
 	get BUNDLED_CHANGELOG() { return mockBundledChangelog; },
 }));
 
+vi.mock("../pr-watch-runner", () => ({ runPrWatches: vi.fn(async () => undefined) }));
+
 vi.mock("../data", () => ({
 	getProject: vi.fn(),
 	getTask: vi.fn(),
@@ -409,6 +411,7 @@ import * as data from "../data";
 import { clearResourceMonitorBoost, isResourceMonitorBoosted } from "../resource-monitor";
 import * as git from "../git";
 import * as github from "../github";
+import { runPrWatches } from "../pr-watch-runner";
 import * as pty from "../pty-server";
 import { getUserShell } from "../shell-env";
 import { tmux } from "../tmux";
@@ -12199,6 +12202,37 @@ describe("checkOpenPRsForPromotion", () => {
 
 		expect(data.updateTask).toHaveBeenCalledWith(project, task.id, { status: "review-by-colleague" });
 		expect(push).toHaveBeenCalledWith("taskUpdated", { projectId: project.id, task: promoted });
+	});
+
+	it("hands the polled PR to the PR watches of a task that has one", async () => {
+		const { project, task } = setup({ prWatches: [{ id: "w", until: "ci", prNumber: 42, headSha: "abc", createdAt: "2026-10-22T10:00:00.000Z" }] });
+		const checks = [{ name: "lint", status: "COMPLETED", conclusion: "SUCCESS" }];
+		vi.mocked(github.runGitHub).mockResolvedValue({
+			ok: true,
+			stdout: JSON.stringify([{ number: 42, isDraft: false, state: "OPEN", url: "https://github.com/a/b/pull/42", headRefOid: "def", statusCheckRollup: checks }]),
+			stderr: "",
+			code: 0,
+		});
+		vi.mocked(runPrWatches).mockClear();
+
+		await checkOpenPRsForPromotion();
+
+		expect(runPrWatches).toHaveBeenCalledWith(
+			project,
+			task.id,
+			{ number: 42, state: "OPEN", headRefOid: "def", checks: [{ ...checks[0], detailsUrl: null }] },
+			"https://github.com/a/b/pull/42",
+		);
+	});
+
+	it("leaves the PR watches alone for a task without one", async () => {
+		setup();
+		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify([{ number: 42, isDraft: false, state: "OPEN" }]), stderr: "", code: 0 });
+		vi.mocked(runPrWatches).mockClear();
+
+		await checkOpenPRsForPromotion();
+
+		expect(runPrWatches).not.toHaveBeenCalled();
 	});
 
 	it("does not promote when PR is a draft", async () => {

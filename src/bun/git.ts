@@ -1675,6 +1675,11 @@ export async function getHeadSha(worktreePath: string): Promise<string | null> {
 	return result.stdout.trim() || null;
 }
 
+/** Is `sha` a commit object this repository has? A fork's PR head is not, until fetched. */
+export async function commitExists(worktreePath: string, sha: string): Promise<boolean> {
+	return (await run(["git", "cat-file", "-e", `${sha}^{commit}`], worktreePath)).ok;
+}
+
 export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
 	const result = await run(["git", "status", "--porcelain"], worktreePath);
 	if (!result.ok) return false;

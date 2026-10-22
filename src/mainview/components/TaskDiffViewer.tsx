@@ -219,6 +219,8 @@ interface DiffSearchMatch {
 	lineNumber: number | null;
 	side: InlineCommentSideKey | null;
 	change: DiffSearchLineChange | null;
+	/** Position in diff order: file index, then line index in the file (-1 for the path hit). */
+	order: readonly [number, number];
 }
 
 /** The current content hit, handed to its file section so it can expand collapsed context. */
@@ -440,7 +442,7 @@ function buildDiffSearchMatches(files: TaskDiffFile[], query: string): DiffSearc
 	}
 
 	const matches: DiffSearchMatch[] = [];
-	for (const file of files) {
+	for (const [fileIndex, file] of files.entries()) {
 		const filePath = getReviewFilePath(file);
 		if (filePath.toLocaleLowerCase().includes(needle)) {
 			matches.push({
@@ -452,10 +454,11 @@ function buildDiffSearchMatches(files: TaskDiffFile[], query: string): DiffSearc
 				lineNumber: null,
 				side: null,
 				change: null,
+				order: [fileIndex, -1],
 			});
 		}
 
-		for (const candidate of collectDiffSearchCandidates(file)) {
+		for (const [candidateIndex, candidate] of collectDiffSearchCandidates(file).entries()) {
 			if (!candidate.text.toLocaleLowerCase().includes(needle)) {
 				continue;
 			}
@@ -468,6 +471,7 @@ function buildDiffSearchMatches(files: TaskDiffFile[], query: string): DiffSearc
 				lineNumber: candidate.lineNumber,
 				side: candidate.side,
 				change: candidate.change,
+				order: [fileIndex, candidateIndex],
 			});
 		}
 	}
@@ -1974,6 +1978,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 	const scrollSpyFrameRef = useRef<number | null>(null);
 	const pendingCommentScrollFrameRef = useRef<number | null>(null);
 	const pendingSearchScrollFrameRef = useRef<number | null>(null);
+	const activeSearchMatchRef = useRef<DiffSearchMatch | null>(null);
 	const commentRefs = useRef<Record<string, HTMLDivElement | null>>({});
 	const [diffLib, setDiffLib] = useState<DiffLibrary | null>(null);
 	const [payload, setPayload] = useState<TaskDiffResponse | null>(null);
@@ -2731,18 +2736,30 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 	}, [reviewExportXml]);
 
 	useEffect(() => {
-		if (!searchQuery.trim()) {
+		if (!searchQuery.trim() || searchMatches.length === 0) {
 			setActiveSearchIndex(0);
 			cancelPendingSearchScroll();
+			if (!searchQuery.trim()) {
+				activeSearchMatchRef.current = null;
+			}
 			return;
 		}
-		if (searchMatches.length === 0) {
-			setActiveSearchIndex(0);
-			cancelPendingSearchScroll();
+		// Typing keeps the current hit when it survives, else moves to the next one in diff order.
+		const previous = activeSearchMatchRef.current;
+		if (!previous) {
+			activateSearchMatch(0);
 			return;
 		}
-		activateSearchMatch(0);
-		// Search should jump to the first match whenever the query changes.
+		const survivor = searchMatches.findIndex((match) => match.id === previous.id);
+		if (survivor >= 0) {
+			activeSearchMatchRef.current = searchMatches[survivor];
+			setActiveSearchIndex(survivor);
+			return;
+		}
+		const next = searchMatches.findIndex((match) => (
+			match.order[0] - previous.order[0] || match.order[1] - previous.order[1]
+		) >= 0);
+		activateSearchMatch(Math.max(next, 0));
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [searchMatches, searchQuery]);
 
@@ -2947,17 +2964,36 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 		return target?.closest<HTMLElement>("[data-line], tr, .diff-line") ?? null;
 	}
 
+	/** Brings the hit word into view only when it is not already fully visible; false when its row is not rendered. */
+	function scrollSearchHitIntoView(match: DiffSearchMatch): boolean {
+		const row = findSearchMatchElement(match);
+		if (!row) {
+			return false;
+		}
+		const cell = row.matches(DIFF_CODE_CELL_SELECTOR) ? row : row.querySelector<HTMLElement>(DIFF_CODE_CELL_SELECTOR);
+		const range = cell ? collectFindRanges(cell, searchQuery)[0] : undefined;
+		const target = range?.startContainer.parentElement ?? row;
+		const region = scrollRegionRef.current;
+		const box = target.closest(".diff-table-scroll-container") ?? region;
+		const rect = range?.getBoundingClientRect?.();
+		if (region && box && rect && (rect.width > 0 || rect.height > 0)) {
+			const regionRect = region.getBoundingClientRect();
+			const boxRect = box.getBoundingClientRect();
+			const top = regionRect.top + (toolbarRef.current?.getBoundingClientRect().height ?? 0);
+			if (rect.top >= top && rect.bottom <= regionRect.bottom && rect.left >= boxRect.left && rect.right <= boxRect.right) {
+				return true;
+			}
+		}
+		target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+		scrollAnchorRef.current?.reanchor();
+		return true;
+	}
+
 	function queueSearchMatchScroll(match: DiffSearchMatch) {
 		cancelPendingSearchScroll();
 		let attemptsLeft = 60;
 		const tryScroll = () => {
-			const element = findSearchMatchElement(match);
-			if (element) {
-				element.scrollIntoView({
-					behavior: "smooth",
-					block: "center",
-				});
-				scrollAnchorRef.current?.reanchor();
+			if (scrollSearchHitIntoView(match)) {
 				pendingSearchScrollFrameRef.current = null;
 				return;
 			}
@@ -2982,12 +3018,17 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 		if (!match) {
 			return;
 		}
+		activeSearchMatchRef.current = match;
 		// A content hit only exists in the source diff DOM — a file left in
 		// markdown preview mode flips back so the hit can be decorated and scrolled to.
 		if (match.kind === "content") {
 			const matchFile = payload?.files.find((candidate) => candidate.id === match.fileId);
 			if (matchFile) {
 				setMdPreviewFiles((current) => (resolveMdPreview(matchFile, current) ? { ...current, [matchFile.id]: false } : current));
+			}
+			cancelPendingSearchScroll();
+			if (scrollSearchHitIntoView(match)) {
+				return;
 			}
 		}
 		scrollToFile(match.fileId, {

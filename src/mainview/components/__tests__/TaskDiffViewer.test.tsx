@@ -1149,6 +1149,38 @@ describe("TaskDiffViewer", () => {
 			await waitFor(() => expect(screen.getByText("3 / 3")).toHaveTextContent("3 / 3 · old"));
 		});
 
+		it("keeps the current hit while the query is refined and it still matches", async () => {
+			const alpha = { 5: "row 5 alpha1", 10: "row 10 alpha2", 15: "row 15 alpha3" };
+			const user = await searchFor("alp", wholeFilePayload(rows(20, alpha), rows(20, { ...alpha, 1: "row 1 edited" })));
+
+			await waitFor(() => expect(screen.getByText("1 / 3")).toBeInTheDocument());
+			await user.click(screen.getByRole("button", { name: "Next match" }));
+			await waitFor(() => expect(currentRow()).toBe("new:10"));
+			scrollIntoViewMock.mockClear();
+
+			await user.type(screen.getByPlaceholderText("Search diff..."), "h");
+
+			await waitFor(() => expect(screen.getByText("2 / 3")).toBeInTheDocument());
+			expect(currentRow()).toBe("new:10");
+			expect(scrollIntoViewMock).not.toHaveBeenCalled();
+		});
+
+		it("moves to the next hit in diff order when refining drops the current line", async () => {
+			const user = await searchFor("alp", wholeFilePayload(
+				rows(20, { 5: "row 5 alpha", 10: "row 10 alpine", 15: "row 15 alpha again" }),
+				rows(20, { 1: "row 1 edited", 5: "row 5 alpha", 10: "row 10 alpine", 15: "row 15 alpha again" }),
+			));
+
+			await waitFor(() => expect(screen.getByText("1 / 3")).toBeInTheDocument());
+			await user.click(screen.getByRole("button", { name: "Next match" }));
+			await waitFor(() => expect(currentRow()).toBe("new:10"));
+
+			await user.type(screen.getByPlaceholderText("Search diff..."), "h");
+
+			await waitFor(() => expect(screen.getByText("2 / 2")).toBeInTheDocument());
+			await waitFor(() => expect(currentRow()).toBe("new:15"));
+		});
+
 		it("expands the file when the hit sits on a folded-away line", async () => {
 			// New line 30 is mock row 40 (old rows) + 29.
 			mockSearchHooks.hiddenLineIndexes.add(69);

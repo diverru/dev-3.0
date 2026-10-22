@@ -26,6 +26,12 @@ vi.mock("../../rpc", () => ({
 	},
 }));
 
+const mockSearchHooks = vi.hoisted(() => ({
+	/** Mock line indexes the diff library reports as folded away. */
+	hiddenLineIndexes: new Set<number>(),
+	onAllExpand: vi.fn(),
+}));
+
 vi.mock("@git-diff-view/react", async () => {
 	const React = await import("react");
 	const SplitSide = {
@@ -294,8 +300,8 @@ vi.mock("@git-diff-view/file", () => ({
 			}
 			return -1;
 		},
-		getUnifiedLine(_index: number) {
-			return { isHidden: false };
+		getUnifiedLine(index: number) {
+			return { isHidden: mockSearchHooks.hiddenLineIndexes.has(index) };
 		},
 		getSplitLineIndexByLineNumber(this: { __mockLines: Array<{ side: string }> }, lineNumber: number, side: number) {
 			const sideName = side === 0 ? "old" : "new";
@@ -308,12 +314,13 @@ vi.mock("@git-diff-view/file", () => ({
 			}
 			return -1;
 		},
-		getSplitLeftLine(_index: number) {
-			return { isHidden: false };
+		getSplitLeftLine(index: number) {
+			return { isHidden: mockSearchHooks.hiddenLineIndexes.has(index) };
 		},
-		getSplitRightLine(_index: number) {
-			return { isHidden: false };
+		getSplitRightLine(index: number) {
+			return { isHidden: mockSearchHooks.hiddenLineIndexes.has(index) };
 		},
+		onAllExpand: (mode: "split" | "unified") => mockSearchHooks.onAllExpand(mode),
 	}),
 }));
 
@@ -1053,6 +1060,105 @@ describe("TaskDiffViewer", () => {
 			expect(document.querySelectorAll(".dev3-diff-search-match-line").length).toBeGreaterThan(0);
 		});
 		expect(document.querySelector(".dev3-diff-search-current-line")).not.toBeNull();
+	});
+
+	describe("search over a whole file (hunks: null)", () => {
+		const rows = (count: number, overrides: Record<number, string> = {}) =>
+			Array.from({ length: count }, (_, i) => overrides[i + 1] ?? `row ${i + 1}`).join("\n") + "\n";
+
+		function wholeFilePayload(oldContent: string, newContent: string): TaskDiffResponse {
+			const payload = singleFilePayload(newContent, "", oldContent);
+			return { ...payload, files: payload.files.map((file) => ({ ...file, hunks: null })) };
+		}
+
+		async function searchFor(query: string, payload: TaskDiffResponse) {
+			const user = userEvent.setup();
+			vi.mocked(api.request.getTaskDiff).mockResolvedValue(payload);
+			render(
+				<I18nProvider>
+					<TaskDiffViewer
+						task={task}
+						project={project}
+						request={{ mode: "branch", compareRef: "origin/main", compareLabel: "origin/main" }}
+						onBack={vi.fn()}
+					/>
+				</I18nProvider>,
+			);
+			await screen.findAllByTestId("mock-diff");
+			await user.keyboard("{Meta>}f{/Meta}");
+			await user.type(screen.getByPlaceholderText("Search diff..."), query);
+			return user;
+		}
+
+		const currentRow = () => {
+			const row = document.querySelector(".dev3-diff-search-current-line");
+			return row ? `${row.getAttribute("data-side")}:${row.querySelector("[data-line-num]")?.getAttribute("data-line-num")}` : null;
+		};
+
+		afterEach(() => {
+			mockSearchHooks.hiddenLineIndexes.clear();
+			mockSearchHooks.onAllExpand.mockReset();
+		});
+
+		it("counts a context line once and steps through the lines in diff order", async () => {
+			const needle = { 3: "row 3 needle", 10: "row 10 needle", 15: "row 15 needle", 20: "row 20 needle" };
+			const user = await searchFor("needle", wholeFilePayload(
+				rows(30, needle),
+				rows(30, { ...needle, 15: "row 15 needle edited" }),
+			));
+
+			// 3 unchanged lines once each, plus the removed and the added version of line 15.
+			await waitFor(() => expect(screen.getByText("1 / 5")).toBeInTheDocument());
+			const visited: Array<string | null> = [];
+			for (let step = 1; step <= 5; step += 1) {
+				await waitFor(() => expect(screen.getByText(`${step} / 5`)).toBeInTheDocument());
+				await waitFor(() => expect(currentRow()).not.toBeNull());
+				visited.push(currentRow());
+				await user.click(screen.getByRole("button", { name: "Next match" }));
+			}
+			expect(visited).toEqual(["new:3", "new:10", "old:15", "new:15", "new:20"]);
+
+			// Past the last hit the cursor wraps to the top instead of walking a second copy of the file.
+			await waitFor(() => expect(screen.getByText("1 / 5")).toBeInTheDocument());
+			await waitFor(() => expect(currentRow()).toBe("new:3"));
+		});
+
+		it("selects the row of the hit's own side and line, not any row whose text contains the number", async () => {
+			const user = await searchFor("shared token", wholeFilePayload(
+				rows(20, { 15: "row 15 shared token" }),
+				rows(20, { 5: "row 5 shared token", 15: "row 15 changed" }),
+			));
+
+			await waitFor(() => expect(screen.getByText("1 / 2")).toBeInTheDocument());
+			await waitFor(() => expect(currentRow()).toBe("new:5"));
+			await user.click(screen.getByRole("button", { name: "Next match" }));
+			await waitFor(() => expect(currentRow()).toBe("old:15"));
+			expect(mockSearchHooks.onAllExpand).not.toHaveBeenCalled();
+		});
+
+		it("shows which side the current hit is on", async () => {
+			const user = await searchFor("shared token", wholeFilePayload(
+				rows(20, { 15: "row 15 shared token", 8: "row 8 shared token" }),
+				rows(20, { 5: "row 5 shared token", 8: "row 8 shared token", 15: "row 15 changed" }),
+			));
+
+			await waitFor(() => expect(screen.getByText("1 / 3")).toHaveTextContent("1 / 3 · new"));
+			await user.click(screen.getByRole("button", { name: "Next match" }));
+			await waitFor(() => expect(screen.getByText("2 / 3")).toHaveTextContent("2 / 3 · both"));
+			await user.click(screen.getByRole("button", { name: "Next match" }));
+			await waitFor(() => expect(screen.getByText("3 / 3")).toHaveTextContent("3 / 3 · old"));
+		});
+
+		it("expands the file when the hit sits on a folded-away line", async () => {
+			// New line 30 is mock row 40 (old rows) + 29.
+			mockSearchHooks.hiddenLineIndexes.add(69);
+			await searchFor("buried", wholeFilePayload(
+				rows(40, { 30: "row 30 buried" }),
+				rows(40, { 1: "row 1 edited", 30: "row 30 buried" }),
+			));
+
+			await waitFor(() => expect(mockSearchHooks.onAllExpand).toHaveBeenCalledWith("split"));
+		});
 	});
 
 	it("moves through matches in top-to-bottom order with next and prev", async () => {

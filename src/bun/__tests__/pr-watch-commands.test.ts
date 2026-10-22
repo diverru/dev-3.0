@@ -8,6 +8,7 @@ vi.mock("../git", () => ({ getCurrentBranch: vi.fn(), getHeadSha: vi.fn() }));
 vi.mock("../github", () => ({ runGitHub: vi.fn(), findOpenPullRequest: vi.fn() }));
 vi.mock("../lifecycle/activities", () => ({ persistTaskPrIdentity: vi.fn() }));
 vi.mock("../lifecycle/service", () => ({ lifecycleActorRuntime: () => runtime }));
+vi.mock("../scheduled-message-author", () => ({ captureScheduledMessageAuthor: vi.fn(async () => null) }));
 vi.mock("../pr-watch-runner", () => ({ addPrWatch: vi.fn(), clearPrWatches: vi.fn(async () => 2) }));
 
 import * as data from "../data";
@@ -15,7 +16,8 @@ import * as git from "../git";
 import * as github from "../github";
 import { persistTaskPrIdentity } from "../lifecycle/activities";
 import { addPrWatch } from "../pr-watch-runner";
-import { prWatchHandlers } from "../cli-socket/pr-watch-commands";
+import { captureScheduledMessageAuthor } from "../scheduled-message-author";
+import { PR_WATCH_GH_TIMEOUT_MS, prWatchHandlers } from "../cli-socket/pr-watch-commands";
 
 const project = { id: "p1" } as Project;
 const HEAD = "a".repeat(40);
@@ -49,21 +51,54 @@ describe("pr.watch.add", () => {
 		expect(runtime.prNextDue).toBeUndefined();
 	});
 
-	it("prefers the PR recorded on the task over a lookup", async () => {
+	it("prefers the open PR of the branch over a stale one recorded on the task", async () => {
 		task = { ...task, prNumber: 5, prUrl: "https://github.com/a/b/pull/5" } as Task;
 		await add();
-		expect(github.findOpenPullRequest).not.toHaveBeenCalled();
-		expect(persistTaskPrIdentity).not.toHaveBeenCalled();
+		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ prNumber: 7 });
+		expect(persistTaskPrIdentity).toHaveBeenCalledWith(project, task, 7, "https://github.com/a/b/pull/7");
+	});
+
+	it("falls back to the PR recorded on the task when the branch has no open PR", async () => {
+		task = { ...task, prNumber: 5, prUrl: "https://github.com/a/b/pull/5" } as Task;
+		vi.mocked(github.findOpenPullRequest).mockResolvedValue({ pr: null, isGitHub: true });
+		await add();
 		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ prNumber: 5 });
 	});
 
-	it("lets --pr win and checks that it exists", async () => {
-		task = { ...task, prNumber: 5, prUrl: "https://github.com/a/b/pull/5" } as Task;
-		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify({ number: 9, url: "https://github.com/a/b/pull/9" }), stderr: "", code: 0 });
+	it("lets --pr win when that PR is from the task's branch", async () => {
+		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify({ number: 9, url: "https://github.com/a/b/pull/9", headRefName: "feat/x" }), stderr: "", code: 0 });
 
 		await add({ prNumber: 9 });
 
 		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ prNumber: 9 });
+	});
+
+	it("refuses --pr from another branch, and records nothing about it", async () => {
+		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify({ number: 9, url: "https://github.com/a/b/pull/9", headRefName: "other" }), stderr: "", code: 0 });
+
+		await expect(add({ prNumber: 9 })).rejects.toThrow(PR_WATCH_NO_PR_PREFIX);
+		expect(persistTaskPrIdentity).not.toHaveBeenCalled();
+		expect(addPrWatch).not.toHaveBeenCalled();
+	});
+
+	it("caps every gh call it makes", async () => {
+		await add();
+		expect(vi.mocked(github.findOpenPullRequest).mock.calls[0][3]).toEqual({ timeoutMs: PR_WATCH_GH_TIMEOUT_MS });
+		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify({ number: 9, url: "", headRefName: "feat/x" }), stderr: "", code: 0 });
+		await add({ prNumber: 9 });
+		expect(vi.mocked(github.runGitHub).mock.calls[0][3]).toEqual({ timeoutMs: PR_WATCH_GH_TIMEOUT_MS });
+	});
+
+	it("binds the watch to the calling agent only for the caller's own task", async () => {
+		const author = { paneId: "%3", sessionId: null, paneToken: "t", agentProcess: "9@x" };
+		vi.mocked(captureScheduledMessageAuthor).mockResolvedValue(author);
+
+		await add({ sourceTaskId: "t1", sourcePaneId: "%3", sourcePid: 99 });
+		expect(captureScheduledMessageAuthor).toHaveBeenCalledWith(task, "%3", 99);
+		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ author });
+
+		await add({ sourceTaskId: "someone-else", sourcePaneId: "%3", sourcePid: 99 });
+		expect(vi.mocked(addPrWatch).mock.calls[1][2]).not.toHaveProperty("author");
 	});
 
 	it("fails with the no-PR prefix when --pr names nothing", async () => {

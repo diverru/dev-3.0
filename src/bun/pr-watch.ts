@@ -11,16 +11,15 @@ export interface PrWatchSample {
 	checks: PRCheckInfo[];
 }
 
-/** Local repository facts the verdict needs; the caller answers them with git. */
+/** What the verdict needs from the local repository. */
 export interface PrWatchGit {
-	hasCommit(sha: string): Promise<boolean>;
-	/** True when `ancestor` is an ancestor of `descendant` (the two differ). */
+	/** True when `ancestor` is an ancestor of `descendant`; false too when either commit is unknown here. */
 	isAncestor(ancestor: string, descendant: string): Promise<boolean>;
 }
 
 export interface PrWatchOutcome {
-	/** What to tell the agent; empty means nothing fired. */
-	notices: PrStatusNotice[];
+	/** Watches that fired, each with what to tell its agent; empty means nothing fired. */
+	fired: Array<{ watch: PrWatch; notice: PrStatusNotice }>;
 	/** Watches that fired and are done. */
 	removeIds: string[];
 	/** Watches that stay, with the fields that moved. */
@@ -28,31 +27,30 @@ export interface PrWatchOutcome {
 }
 
 /**
- * Judge a task's watches against one polled PR.
- *
- * The verdict is only about the head the agent pushed: a sample whose head is
- * missing locally (a fork PR with the same branch name) or is an older ancestor of
- * the watch's head (the push is not visible on GitHub yet) says nothing about it.
- * A head that is neither means the agent pushed again, and the watch moves along.
+ * Judge a task's watches against one polled PR. A merge or close is a fact about the
+ * PR whatever its head. For CI the verdict is only about the head the agent pushed:
+ * a head that is an older ancestor of the watch's head (the push is not visible on
+ * GitHub yet) says nothing, and any other head — including one this repository has
+ * not fetched — means the PR moved on, so the watch moves along.
  */
 export async function evaluatePrWatches(
 	watches: readonly PrWatch[],
 	sample: PrWatchSample,
 	git: PrWatchGit,
 ): Promise<PrWatchOutcome> {
-	const outcome: PrWatchOutcome = { notices: [], removeIds: [], patches: {} };
+	const outcome: PrWatchOutcome = { fired: [], removeIds: [], patches: {} };
 	const mine = watches.filter((watch) => watch.prNumber === sample.number);
-	const head = sample.headRefOid;
-	if (mine.length === 0 || !head || !(await git.hasCommit(head))) return outcome;
-
 	const state = sample.state?.toUpperCase();
+	if (mine.length === 0) return outcome;
+
 	if (state === "MERGED" || state === "CLOSED") {
 		const notice: PrStatusNotice = state === "MERGED" ? { kind: "merged" } : { kind: "closed" };
-		outcome.notices.push(notice);
+		for (const watch of mine) outcome.fired.push({ watch, notice });
 		outcome.removeIds.push(...mine.map((watch) => watch.id));
 		return outcome;
 	}
-	if (state !== "OPEN") return outcome;
+	const head = sample.headRefOid;
+	if (state !== "OPEN" || !head) return outcome;
 
 	const { total, pending, failed } = summarizeChecks(sample.checks);
 	const ciDone = total > 0 && pending === 0;
@@ -62,13 +60,13 @@ export async function evaluatePrWatches(
 			outcome.patches[watch.id] = { headSha: head };
 		}
 		if (!ciDone) continue;
-		const failedNotice: PrStatusNotice = { kind: "ci-failed", sha: head, failedChecks: failed, totalChecks: total };
+		const failedNotice: PrStatusNotice = { kind: "ci-failed", sha: head, failedCount: failed.length, totalChecks: total };
 		if (watch.until === "ci") {
-			outcome.notices.push(failed.length > 0 ? failedNotice : { kind: "ci-passed", sha: head });
+			outcome.fired.push({ watch, notice: failed.length > 0 ? failedNotice : { kind: "ci-passed", sha: head } });
 			outcome.removeIds.push(watch.id);
 			delete outcome.patches[watch.id];
 		} else if (failed.length > 0 && watch.failedNotifiedHead !== head) {
-			outcome.notices.push(failedNotice);
+			outcome.fired.push({ watch, notice: failedNotice });
 			outcome.patches[watch.id] = { ...outcome.patches[watch.id], failedNotifiedHead: head };
 		}
 	}
@@ -76,7 +74,7 @@ export async function evaluatePrWatches(
 }
 
 /** The watch list after `outcome`, applied to whatever the task holds now. */
-export function applyPrWatchOutcome(watches: readonly PrWatch[], outcome: PrWatchOutcome): PrWatch[] {
+export function applyPrWatchOutcome(watches: readonly PrWatch[], outcome: Pick<PrWatchOutcome, "removeIds" | "patches">): PrWatch[] {
 	return watches
 		.filter((watch) => !outcome.removeIds.includes(watch.id))
 		.map((watch) => (outcome.patches[watch.id] ? { ...watch, ...outcome.patches[watch.id] } : watch));

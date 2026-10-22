@@ -9,6 +9,9 @@ import { requireValuelessFlag } from "./pr";
 
 const WATCH_USAGE = "Usage: dev3 pr watch [--until ci|merged] [--pr <N>] [--task <id>] [--project <id>] | dev3 pr watch --off | dev3 pr watch --list";
 
+/** Longer than the app's 15 s cap on each `gh` call it makes while subscribing. */
+const SUBSCRIBE_TIMEOUT_MS = 45_000;
+
 const WATCH_SUMMARY: Record<PrWatchUntil, string> = {
 	ci: "CI finishes",
 	merged: "it is merged or closed",
@@ -62,7 +65,15 @@ export async function handlePrWatch(args: ParsedArgs, socketPath: string, contex
 
 	params.until = until;
 	if (prNumber !== undefined) params.prNumber = prNumber;
-	const resp = await sendRequest(socketPath, "pr.watch.add", params);
+	// Our pane and pid, so the message comes back to this agent and not to a sibling; the app decides whether it applies.
+	const sourcePaneId = context?.taskId ? (process.env.TMUX_PANE?.trim() || process.env.DEV3_PANE_ID?.trim()) : undefined;
+	if (context?.taskId) params.sourceTaskId = context.taskId;
+	if (sourcePaneId) {
+		params.sourcePaneId = sourcePaneId;
+		params.sourcePid = process.pid;
+	}
+	// The app caps its own `gh` calls at 15 s; the wait here must outlast them.
+	const resp = await sendRequest(socketPath, "pr.watch.add", params, { timeoutMs: SUBSCRIBE_TIMEOUT_MS });
 	if (!resp.ok) {
 		const error = resp.error || "Failed to subscribe";
 		if (error.startsWith(PR_WATCH_NO_PR_PREFIX)) {

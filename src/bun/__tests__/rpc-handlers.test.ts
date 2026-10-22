@@ -12225,6 +12225,26 @@ describe("checkOpenPRsForPromotion", () => {
 		);
 	});
 
+	it("polls a watched task every minute even in a background project, an unwatched one far less often", async () => {
+		const { lifecycleActorRuntime } = await import("../lifecycle/service");
+		const prJson = JSON.stringify([{ number: 42, isDraft: false, state: "OPEN", url: "https://github.com/a/b/pull/42" }]);
+		const nextPollIn = async (overrides: Partial<Task>) => {
+			const { task } = setup(overrides);
+			vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: prJson, stderr: "", code: 0 });
+			_resetPRPollerState();
+			_setScheduleRandomForTest(() => 0);
+			const before = Date.now();
+			await checkOpenPRsForPromotion();
+			return (lifecycleActorRuntime(task.id).prNextDue ?? 0) - before;
+		};
+
+		const watched = await nextPollIn({ prWatches: [{ id: "w", until: "ci", prNumber: 42, headSha: "abc", createdAt: "2026-10-22T10:00:00.000Z" }] });
+		const unwatched = await nextPollIn({});
+
+		expect(watched).toBeLessThanOrEqual(60_000 + 1_000);
+		expect(unwatched).toBeGreaterThan(5 * 60_000);
+	});
+
 	it("leaves the PR watches alone for a task without one", async () => {
 		setup();
 		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify([{ number: 42, isDraft: false, state: "OPEN" }]), stderr: "", code: 0 });

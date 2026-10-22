@@ -39,6 +39,8 @@ async function run(flags: Record<string, string>, context: CliContext | null = c
 }
 
 beforeEach(() => {
+	vi.stubEnv("TMUX_PANE", "");
+	vi.stubEnv("DEV3_PANE_ID", "");
 	stdout = "";
 	stderr = "";
 	send.mockReset();
@@ -58,6 +60,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	for (const spy of spies.splice(0)) spy.mockRestore();
 });
 
@@ -67,7 +70,12 @@ describe("dev3 pr watch", () => {
 
 		expect(await run({})).toBeNull();
 
-		expect(send).toHaveBeenCalledWith("/tmp/x.sock", "pr.watch.add", { taskId: "task-1", projectId: "proj-1", until: "ci" });
+		expect(send).toHaveBeenCalledWith(
+			"/tmp/x.sock",
+			"pr.watch.add",
+			{ taskId: "task-1", projectId: "proj-1", until: "ci", sourceTaskId: "task-1" },
+			{ timeoutMs: 45_000 },
+		);
 		expect(stdout).toBe("Watching PR #2041 until CI finishes — dev3 will message this agent. No need to poll gh.\n");
 	});
 
@@ -76,8 +84,23 @@ describe("dev3 pr watch", () => {
 
 		await run({ until: "merged", pr: "9", task: "seq:12", project: "proj-2" });
 
-		expect(send).toHaveBeenCalledWith("/tmp/x.sock", "pr.watch.add", { taskId: "seq:12", projectId: "proj-2", until: "merged", prNumber: 9 });
+		expect(send.mock.calls[0][2]).toMatchObject({ taskId: "seq:12", projectId: "proj-2", until: "merged", prNumber: 9 });
 		expect(stdout).toContain("until it is merged or closed");
+	});
+
+	it("sends this agent's pane and pid so the message comes back to it", async () => {
+		vi.stubEnv("TMUX_PANE", "%4");
+		send.mockResolvedValue({ id: "1", ok: true, data: { prNumber: 2041 } });
+
+		await run({});
+
+		expect(send.mock.calls[0][2]).toMatchObject({ sourceTaskId: "task-1", sourcePaneId: "%4", sourcePid: process.pid });
+	});
+
+	it("waits longer for the app than the app waits for gh", async () => {
+		send.mockResolvedValue({ id: "1", ok: true, data: { prNumber: 1 } });
+		await run({});
+		expect(send.mock.calls[0][3]?.timeoutMs).toBeGreaterThan(15_000);
 	});
 
 	it("exits with the no-PR code and subscribes nothing when no PR is found", async () => {

@@ -1,3 +1,5 @@
+import type { ScheduledMessageAuthor } from "./types";
+
 /** A PR event an agent can subscribe to with `dev3 pr watch`. */
 export const PR_WATCH_UNTIL = ["ci", "merged"] as const;
 export type PrWatchUntil = (typeof PR_WATCH_UNTIL)[number];
@@ -12,6 +14,8 @@ export interface PrWatch {
 	createdAt: string;
 	/** `until: merged` only: the head whose CI failure was already reported. */
 	failedNotifiedHead?: string;
+	/** The agent process that subscribed; the message goes to its pane, never to a sibling's. */
+	author?: ScheduledMessageAuthor;
 }
 
 /** Error prefix that makes the CLI exit with `CLI_EXIT_CODE_PR_WATCH_NO_PR`. */
@@ -20,6 +24,6 @@ export const PR_WATCH_NO_PR_PREFIX = "pr-watch-no-pr: ";
 /** What happened to the PR, as the agent is told. */
 export type PrStatusNotice =
 	| { kind: "ci-passed"; sha: string }
-	| { kind: "ci-failed"; sha: string; failedChecks: string[]; totalChecks: number }
+	| { kind: "ci-failed"; sha: string; failedCount: number; totalChecks: number }
 	| { kind: "merged" }
 	| { kind: "closed" };

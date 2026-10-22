@@ -10,9 +10,12 @@ import { applyPrWatchOutcome, evaluatePrWatches, upsertPrWatch, type PrWatchOutc
 export const PR_WATCH_RETRY_BACKOFF_MS = 5 * 60_000;
 
 const retryAfter = new Map<string, number>();
+// Two overlapping polls of one task (timer tick, popover refresh) must not both deliver.
+const inFlight = new Set<string>();
 
 export function _resetPrWatchRunnerState(): void {
 	retryAfter.clear();
+	inFlight.clear();
 }
 
 function isTerminal(task: Task): boolean {
@@ -48,11 +51,22 @@ export async function clearPrWatches(project: Project, taskId: string): Promise<
 }
 
 /**
- * Judge the task's watches against a freshly polled PR and, when one fires, type
- * one message into the agent. Nothing is removed until the message was accepted:
- * an agent that cannot be reached keeps its watch and hears about it on a later poll.
+ * Judge the task's watches against a freshly polled PR and, when some fire, type
+ * one message per subscribing agent into its pane. Nothing is removed until the
+ * message was accepted: an agent that cannot be reached keeps its watch and hears
+ * about it on a later poll.
  */
 export async function runPrWatches(project: Project, taskId: string, sample: PrWatchSample, prUrl: string): Promise<void> {
+	if (inFlight.has(taskId)) return;
+	inFlight.add(taskId);
+	try {
+		await runPrWatchesOnce(project, taskId, sample, prUrl);
+	} finally {
+		inFlight.delete(taskId);
+	}
+}
+
+async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatchSample, prUrl: string): Promise<void> {
 	// Fresh read: the poll's task snapshot may predate a `--off` or a new subscription.
 	const task = await data.getTask(project, taskId);
 	const watches = task.prWatches ?? [];
@@ -60,41 +74,73 @@ export async function runPrWatches(project: Project, taskId: string, sample: PrW
 	if (watches.length === 0 || !worktree || isTerminal(task)) return;
 
 	const outcome = await evaluatePrWatches(watches, sample, {
-		hasCommit: (sha) => git.commitExists(worktree, sha),
 		isAncestor: (ancestor, descendant) => git.isRefMergedInto(worktree, ancestor, descendant),
 	});
-	if (outcome.notices.length === 0) {
-		if (Object.keys(outcome.patches).length > 0) {
-			await persistWatches(project, taskId, (current) => applyPrWatchOutcome(current, outcome));
-		}
-		return;
+	const firedIds = new Set(outcome.fired.map(({ watch }) => watch.id));
+	const quietPatches = Object.fromEntries(Object.entries(outcome.patches).filter(([id]) => !firedIds.has(id)));
+	if (Object.keys(quietPatches).length > 0) {
+		await persistWatches(project, taskId, (current) => applyPrWatchOutcome(current, { removeIds: [], patches: quietPatches }));
 	}
+	if (outcome.fired.length === 0) return;
 	if (!agentCanReceive(task) || (retryAfter.get(taskId) ?? 0) > Date.now()) return;
 
-	const remaining = [...new Set(applyPrWatchOutcome(watches, outcome).map((watch) => watch.until))];
-	const delivered = await deliver(task, outcome, sample.number, prUrl, remaining);
-	if (!delivered) return;
-	retryAfter.delete(taskId);
-	await persistWatches(project, taskId, (current) => applyPrWatchOutcome(current, outcome));
+	const groups = new Map<string, PrWatchOutcome["fired"]>();
+	for (const fired of outcome.fired) {
+		const key = fired.watch.author?.paneId ?? "";
+		groups.set(key, [...(groups.get(key) ?? []), fired]);
+	}
+	for (const group of groups.values()) {
+		if (!(await deliverGroup(project, taskId, group, outcome, sample.number, prUrl))) return;
+	}
 }
 
-async function deliver(
-	task: Task,
+/** One message to one subscriber. False when delivery failed and the rest should wait. */
+async function deliverGroup(
+	project: Project,
+	taskId: string,
+	group: PrWatchOutcome["fired"],
 	outcome: PrWatchOutcome,
 	prNumber: number,
 	prUrl: string,
-	remaining: PrWatch["until"][],
 ): Promise<boolean> {
+	// Re-read right before typing: a `--off` or another run may have taken these watches since.
+	const task = await data.getTask(project, taskId);
+	const held = new Set((task.prWatches ?? []).map((watch) => watch.id));
+	const live = group.filter(({ watch }) => held.has(watch.id));
+	if (live.length === 0) return true;
+
+	const ids = new Set(live.map(({ watch }) => watch.id));
+	const settle = (current: PrWatch[]) => applyPrWatchOutcome(current, {
+		removeIds: outcome.removeIds.filter((id) => ids.has(id)),
+		patches: Object.fromEntries(Object.entries(outcome.patches).filter(([id]) => ids.has(id))),
+	});
+	const author = live[0].watch.author;
+	if (author) {
+		const { resolveScheduledMessageAuthorPane } = await import("./scheduled-message-author");
+		const resolved = await resolveScheduledMessageAuthorPane(task, author);
+		if (!resolved.ok) {
+			// Like a self-reminder whose author is gone: dropped, never handed to a neighbour.
+			log.warn("PR watch dropped: its subscriber is gone", { taskId: taskId.slice(0, 8), detail: resolved.detail });
+			await persistWatches(project, taskId, (current) => current.filter((watch) => !ids.has(watch.id)));
+			return true;
+		}
+	}
+
+	const sameSubscriber = (watch: PrWatch) => (watch.author?.paneId ?? "") === (author?.paneId ?? "");
+	const settled = settle(task.prWatches ?? []);
+	const remaining = [...new Set(settled.filter(sameSubscriber).map((watch) => watch.until))];
+	const notices = live.map(({ notice }) => notice);
 	try {
 		// Loaded on demand: the scheduler pulls in the whole prompt-delivery stack.
 		const { sendMessageImmediately } = await import("./scheduled-message-scheduler");
-		const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices: outcome.notices, remaining });
-		const subject = prStatusSubject(prNumber, outcome.notices);
-		await sendMessageImmediately(task, text, null, null, { subject, origin: "dev3" });
-		return true;
+		const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining });
+		await sendMessageImmediately(task, text, null, null, { subject: prStatusSubject(prNumber, notices), origin: "dev3", author });
 	} catch (err) {
-		retryAfter.set(task.id, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
-		log.warn("PR watch message not delivered; the watch stays", { taskId: task.id.slice(0, 8), error: String(err) });
+		retryAfter.set(taskId, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
+		log.warn("PR watch message not delivered; the watch stays", { taskId: taskId.slice(0, 8), error: String(err) });
 		return false;
 	}
+	retryAfter.delete(taskId);
+	await persistWatches(project, taskId, settle);
+	return true;
 }

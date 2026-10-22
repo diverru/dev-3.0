@@ -1042,6 +1042,7 @@ const COMMANDS: CommandHelp[] = [
 					"--off            Remove every watch of the task. --list prints them.",
 					"The command stores the subscription in the app and exits; dev3 types the message into",
 					"this agent when it is quiet. Never poll `gh` or set a timer for it.",
+					"A repo with no CI checks never ends a `ci` watch (no run to finish): use --until merged.",
 					"A new push moves the watch to the new head. One watch per --until; repeating replaces it.",
 					"Needs the running app.",
 				],

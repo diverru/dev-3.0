@@ -401,8 +401,9 @@ export async function persistProjectPrIdentities(project: Project, prs: PRInfo[]
 }
 
 function prPollInterval(isActiveForeground: boolean, task: Task): number {
-	// An agent waiting on a `dev3 pr watch` gets the pending cadence even in a background project.
-	return lifecycleActorRuntime(task.id).prPending || (task.prWatches?.length ?? 0) > 0
+	// An agent waiting on a `dev3 pr watch` is waiting while the user looks elsewhere, so the 60 s cadence holds in the background too.
+	if ((task.prWatches?.length ?? 0) > 0) return ACTIVE_PROJECT_PENDING_PR_INTERVAL_MS;
+	return lifecycleActorRuntime(task.id).prPending
 		? intervalForTask(isActiveForeground, ACTIVE_PROJECT_PENDING_PR_INTERVAL_MS, BACKGROUND_PROJECT_PENDING_PR_INTERVAL_MS)
 		: intervalForTask(isActiveForeground, ACTIVE_PROJECT_PR_INTERVAL_MS, BACKGROUND_PROJECT_PR_INTERVAL_MS);
 }

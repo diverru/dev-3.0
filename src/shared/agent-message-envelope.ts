@@ -96,29 +96,17 @@ export function wrapArtifactMessage(
 	].join("\n");
 }
 
-const MAX_NOTICE_CHECK_NAMES = 3;
-const MAX_CHECK_NAME_LENGTH = 60;
-
-/** A check name is written by whoever owns the workflow file, so it is cut down to inert text. */
-function inertCheckName(name: string): string {
-	return name.replace(/[\u0000-\u001f\u007f<>]/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_CHECK_NAME_LENGTH);
-}
-
 function prNoticeSentence(prNumber: number, notice: PrStatusNotice): string {
 	switch (notice.kind) {
 		case "merged":
-			return `PR #${prNumber} merged.`;
+			return `PR #${prNumber} merged. dev3 handles the completion offer; do not request task completion yourself.`;
 		case "closed":
 			return `PR #${prNumber} closed without merge.`;
 		case "ci-passed":
 			return `PR #${prNumber}: CI passed on ${notice.sha.slice(0, 7)}.`;
-		case "ci-failed": {
-			const names = notice.failedChecks.map(inertCheckName).filter(Boolean);
-			const shown = names.slice(0, MAX_NOTICE_CHECK_NAMES).join(", ");
-			const more = names.length - MAX_NOTICE_CHECK_NAMES;
-			const list = names.length === 0 ? "" : `: ${shown}${more > 0 ? ` and ${more} more` : ""}`;
-			return `PR #${prNumber}: CI failed on ${notice.sha.slice(0, 7)} — ${notice.failedChecks.length} of ${notice.totalChecks} checks failed${list}.`;
-		}
+		case "ci-failed":
+			// No check names: they are written by whoever owns the workflow file, and this text lands in the agent's prompt.
+			return `PR #${prNumber}: CI failed on ${notice.sha.slice(0, 7)} — ${notice.failedCount} of ${notice.totalChecks} checks failed; see \`gh pr checks ${prNumber}\`.`;
 	}
 }
 
@@ -138,7 +126,7 @@ export function prStatusSubject(prNumber: number, notices: readonly PrStatusNoti
  * The message dev3 itself types into an agent's pane when a `dev3 pr watch`
  * subscription fires. Not a task talking, so no `<reply-with>`.
  *
- * Only dev3's own words, the PR number, its URL, a short SHA and inert check names go
+ * Only dev3's own words, the PR number, its URL, a short SHA and check counts go
  * in. Never the PR title, a review or a comment: fork authors write those, and this
  * text lands in the agent's prompt. It must stay under
  * `AGENT_MESSAGE_SPILL_THRESHOLD_BYTES`.

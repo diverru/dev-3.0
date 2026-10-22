@@ -149,13 +149,18 @@ function looksLikeTaskRef(raw: string): boolean {
 function resolveTarget(args: ParsedArgs, context: CliContext | null): { taskId?: string; server?: string } {
 	const positionals = args.positional.filter((value) => value.length > 0);
 	const flagServer = args.flags.server;
-	let taskRef = args.flags.id;
+	const flagTask = args.flags.task || args.flags["task-id"] || args.flags.id;
+	let positionalTask: string | undefined;
 	let server = typeof flagServer === "string" && flagServer !== "true" ? flagServer : undefined;
 	for (const value of positionals) {
-		if (!taskRef && looksLikeTaskRef(value)) taskRef = value;
+		if (!positionalTask && looksLikeTaskRef(value)) positionalTask = value;
 		else if (!server) server = value;
 		else exitUsage(`Unexpected argument: ${value}`);
 	}
+	if (flagTask && positionalTask && flagTask !== positionalTask) {
+		exitUsage(`Two different tasks given: --task ${flagTask} and ${positionalTask} — pass one`);
+	}
+	const taskRef = flagTask || positionalTask;
 	if (server && !DEV_SERVER_NAME_PATTERN.test(server)) {
 		exitUsage(`"${server}" is not a valid dev server name (lowercase letters, digits and dashes)`);
 	}

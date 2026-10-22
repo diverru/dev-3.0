@@ -576,7 +576,7 @@ const COMMANDS: CommandHelp[] = [
 		subcommands: [
 			{
 				name: "start",
-				usage: "dev3 dev-server start [task-id] [server] [--all] [--wait] [--timeout <sec>] [--env KEY=VALUE ...]",
+				usage: "dev3 dev-server start [task-id | --task <id>] [server] [--all] [--wait] [--timeout <sec>] [--env KEY=VALUE ...]",
 				summary:
 					"Start a dev server. Name one of the project's declared servers, or --all for every one; with neither it starts"
 					+ " the default server (the project's devScript), or the only declared server when there is no default."
@@ -586,24 +586,24 @@ const COMMANDS: CommandHelp[] = [
 			},
 			{
 				name: "stop",
-				usage: "dev3 dev-server stop [task-id] [server] [--all]",
+				usage: "dev3 dev-server stop [task-id | --task <id>] [server] [--all]",
 				summary: "Stop one dev server, or --all of them (verified: waits until its processes are dead and ports released).",
 			},
 			{
 				name: "restart",
-				usage: "dev3 dev-server restart [task-id] [server] [--all] [--wait] [--timeout <sec>] [--env KEY=VALUE ...]",
+				usage: "dev3 dev-server restart [task-id | --task <id>] [server] [--all] [--wait] [--timeout <sec>] [--env KEY=VALUE ...]",
 				summary:
 					"Restart one dev server, or --all of them. --wait blocks until the NEW server is listening on a port assigned to it."
 					+ " Without --env it reuses the env of the last start; with --env it replaces it. A stop clears it.",
 			},
 			{
 				name: "status",
-				usage: "dev3 dev-server status [task-id]",
+				usage: "dev3 dev-server status [task-id | --task <id>]",
 				summary: "Show every declared dev server of a task with its state, ports and conflicts (default subcommand).",
 			},
 			{
 				name: "logs",
-				usage: "dev3 dev-server logs [task-id] [--lines N]",
+				usage: "dev3 dev-server logs [task-id | --task <id>] [--lines N]",
 				summary:
 					"Print the tail of the dev server's own output. It is mirrored as plain text to"
 					+ " <taskDir>/logs/dev-server.log (the path is in `status`), so you can grep it instead of"

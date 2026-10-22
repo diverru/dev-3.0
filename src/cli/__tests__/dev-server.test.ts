@@ -131,6 +131,45 @@ describe("dev-server status", () => {
 		}, { retryEmptyResponse: true });
 	});
 
+	// Regression: --task was never read, so the command silently answered for the
+	// task the shell sits in — wrong ports handed to a linked task, no error.
+	it.each(["status", "start", "stop", "restart"] as const)("%s targets --task over the context task", async (action) => {
+		mockSend.mockResolvedValue(okResp(STATUS));
+
+		await handleDevServer(action, parseArgs(["--task", "bbbbbbbb"]), SOCKET, CTX);
+
+		expect(mockSend).toHaveBeenCalledWith(SOCKET, `devServer.${action}`, {
+			taskId: "bbbbbbbb",
+			projectId: CTX.projectId,
+		}, { retryEmptyResponse: true });
+	});
+
+	it("logs targets --task over the context task", async () => {
+		mockSend.mockResolvedValue(okResp(withServer({ logPath: "/nonexistent/dev-server.log" })));
+
+		await handleDevServer("logs", parseArgs(["--task", "bbbbbbbb"]), SOCKET, CTX);
+
+		expect(mockSend).toHaveBeenCalledWith(SOCKET, "devServer.status", {
+			taskId: "bbbbbbbb",
+			projectId: CTX.projectId,
+		}, { retryEmptyResponse: true });
+	});
+
+	it("accepts --task and a positional task when they agree", async () => {
+		mockSend.mockResolvedValue(okResp(STATUS));
+
+		await handleDevServer("status", parseArgs(["bbbbbbbb", "--task", "bbbbbbbb"]), SOCKET, CTX);
+
+		expect(mockSend).toHaveBeenCalledWith(SOCKET, "devServer.status", expect.objectContaining({ taskId: "bbbbbbbb" }), { retryEmptyResponse: true });
+	});
+
+	it("rejects --task and a different positional task instead of picking one", async () => {
+		await expect(
+			handleDevServer("status", parseArgs(["cccccccc", "--task", "bbbbbbbb"]), SOCKET, CTX),
+		).rejects.toThrow("EXIT_3");
+		expect(mockSend).not.toHaveBeenCalled();
+	});
+
 	// Regression: `dev3 dev-server status` used to crash with
 	// "undefined is not an object (evaluating 'ports.length')" when a CLI newer
 	// than the running app received a status payload missing the array fields the

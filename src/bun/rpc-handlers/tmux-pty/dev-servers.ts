@@ -212,6 +212,9 @@ const DEV_SERVER_KILL_WAIT_MS = 2000;
 
 const DEV_SERVER_PORT_RELEASE_WAIT_MS = 3000;
 
+// Docker's default stop grace is 10s before it SIGKILLs the container.
+const CONTAINER_PORT_RELEASE_WAIT_MS = 15_000;
+
 /**
  * The dev-server process tree of a NATIVE task: the pane's own shell plus every
  * descendant, from the same single `ps` snapshot the tmux walk uses (see the
@@ -401,10 +404,18 @@ export async function killDevServerSession(
 
 	// "Stop returned" must mean "the next start can bind": wait for the stopped
 	// servers' ports to actually be released. Ports squatted by foreign processes
-	// are excluded — they will never free and are already reported above.
-	const foreignPorts = new Set(foreignHolders.map((h) => h.port));
+	// are excluded — they will never free and are already reported above. This
+	// worktree's own container is not foreign: its stop outlives the HUP, and a
+	// restart that skips the wait reads the old container as the new one ready.
+	const containerPorts = foreignHolders.length > 0 && worktreePath
+		? await findWorktreeContainerPorts(worktreePath)
+		: new Set<number>();
+	const foreignPorts = new Set(foreignHolders.filter((h) => !containerPorts.has(h.port)).map((h) => h.port));
 	const waitPorts = ownedPorts.filter((port) => !foreignPorts.has(port));
-	const stuckHolders = await waitForPortsFree(waitPorts, DEV_SERVER_PORT_RELEASE_WAIT_MS);
+	const releaseWaitMs = waitPorts.some((port) => containerPorts.has(port))
+		? CONTAINER_PORT_RELEASE_WAIT_MS
+		: DEV_SERVER_PORT_RELEASE_WAIT_MS;
+	const stuckHolders = await waitForPortsFree(waitPorts, releaseWaitMs);
 	if (stuckHolders.length > 0) {
 		log.warn("Assigned ports still held after teardown", { taskId: taskId.slice(0, 8), stuckHolders });
 	}

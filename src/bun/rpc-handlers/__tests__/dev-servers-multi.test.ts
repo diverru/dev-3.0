@@ -322,13 +322,35 @@ describe("a port Docker publishes", () => {
 	});
 
 	it("keeps another project's container a conflict", async () => {
-		mocks.findWorktreeContainerPorts.mockResolvedValue(new Set());
-
 		await startWithDockerHolding();
 		const [entry] = (await getDevServerStatus({ taskId: TASK_ID, projectId: PROJECT.id })).servers;
 
+		expect(mocks.findWorktreeContainerPorts).toHaveBeenCalledWith("/repo/wt");
 		expect(entry.publishedPorts).toEqual([]);
 		expect(entry.portConflicts).toEqual([DOCKER]);
+	});
+
+	it("a stop waits for this worktree's container to release its port", async () => {
+		declare({ devScript: "docker compose up", portCount: 1 });
+		mocks.getPortAssignments.mockReturnValue([17501]);
+		mocks.findPortHolders.mockResolvedValue([DOCKER]);
+		mocks.findWorktreeContainerPorts.mockResolvedValue(new Set([17501]));
+		liveSessions("dev3-dev-abcdef12");
+
+		await stopDevServer({ taskId: TASK_ID, projectId: PROJECT.id });
+
+		expect(mocks.waitForPortsFree).toHaveBeenCalledWith([17501], 15_000);
+	});
+
+	it("a stop does not wait on another project's container", async () => {
+		declare({ devScript: "docker compose up", portCount: 1 });
+		mocks.getPortAssignments.mockReturnValue([17501]);
+		mocks.findPortHolders.mockResolvedValue([DOCKER]);
+		liveSessions("dev3-dev-abcdef12");
+
+		await stopDevServer({ taskId: TASK_ID, projectId: PROJECT.id });
+
+		expect(mocks.waitForPortsFree).toHaveBeenCalledWith([], 3000);
 	});
 });
 

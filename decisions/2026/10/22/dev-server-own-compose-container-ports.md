@@ -11,31 +11,35 @@ squatter and `--wait` times out on a healthy stack.
 
 ## Investigation
 
-No commit changed the classifier's logic since #1429 (#1754 only keyed the
-snapshot per server; #1990 moved the code verbatim). The failure is a state the
-original design already listed as a risk. On HUP `docker compose up` stops its
-container, but the stop takes up to the 10s grace period, and teardown does not
+No commit changed the classifier's logic since #1429; #1754 only keyed the
+snapshot per server and #1990 moved the code verbatim. On HUP `docker compose up`
+stops its container, but that takes up to Docker's 10s grace, and teardown did not
 wait for foreign-held ports, so the 250ms restart gap snapshots the old container.
-The in-memory `carriedPublished` forgives it only when this same app process saw
-the previous run published. After an app restart, or once one start was poisoned,
-every later restart records the daemon as a squatter again, and the loop never
-breaks.
+The in-memory `carriedPublished` forgives it only within one app process, so after
+an app restart every later restart is poisoned again.
 
 ## Decision
 
-`startOneDevServer` asks `docker ps` (`findWorktreeContainerPorts`,
-`src/bun/container-ports.ts`) which host ports running containers publish whose
-`com.docker.compose.project.working_dir` label is the task worktree or a folder
-inside it, and drops those holders from the pre-start snapshot. It runs only when
-an assigned port is already held at start. Status, `--wait`, the board poller and
-the teardown carry all read the snapshot, so they agree.
+`findWorktreeContainerPorts` (`src/bun/container-ports.ts`) asks `docker ps` for
+the host ports of running containers whose `com.docker.compose.project.working_dir`
+is the worktree (raw or realpath) or a folder inside it. It runs only when an
+assigned port already has a foreign holder:
+
+- `killDevServerSession` waits up to 15s for those ports to free, like ports the
+  tree held. Skipping that wait made `restart --wait` report the stopping old
+  container as the new one ready.
+- `startOneDevServer` drops those holders from the pre-start snapshot, for a
+  container that outlives the stop (`up -d`). Status, `--wait`, the board poller
+  and the teardown carry all read that snapshot, so they agree.
 
 ## Risks
 
-Only compose-labelled containers are recognised; a plain `docker run` stays a
-conflict when it outlives a stop. The label is compared as a string, so a compose
-working dir reached through a symlink does not match. A Docker CLI that hangs is
-bounded by a 5s probe timeout.
+A compose project's stop or restart can now take up to ~10s longer: the time
+Docker really spends stopping the container. A container that survives the stop
+still reads as ready at once, as `carriedPublished` already did. Falls back to the
+old behaviour (a conflict): a plain `docker run`, a compose working dir outside
+the worktree (`-f ../x`), podman (no `.Label` template), Windows paths, a remote
+`DOCKER_HOST`. A hung Docker CLI is bounded by a 5s probe timeout.
 
 ## Alternatives considered
 
@@ -43,5 +47,5 @@ bounded by a 5s probe timeout.
   project's container on our port" conflict.
 - **Persist `carriedPublished` to disk** — still fails on the first start after a
   container was left running, and adds on-disk state.
-- **Wait for foreign-held ports to free on stop** — the next `up` may reuse the
-  running container, so the port never frees.
+- **Only exempt at start, no stop wait** — `--wait` returns while the old
+  container is still serving.

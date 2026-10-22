@@ -9,6 +9,7 @@ import { classifyAgainstStartSnapshot, clearDevServerStart, clearDevServerStarts
 import { DEFAULT_DEV_SERVER_NAME, devServerPortCount, devServerScriptBase, resolveDevServerRef, resolveDevServers, splitAssignedPorts, type DevServerResolution, type ResolvedDevServer } from "../../../shared/dev-servers";
 import { clearDevServerEnv, readDevServerEnv, saveDevServerEnv } from "../../dev-server-env-store";
 import { sanitizeDevServerEnv } from "../../../shared/dev-server-env";
+import { findWorktreeContainerPorts } from "../../container-ports";
 import { getPidCwd, terminatePidsVerified } from "../../process-reaper";
 import { getResourceUsage } from "../../resource-monitor";
 import { tmux, DEFAULT_TMUX_SOCKET, TmuxError, isTmuxSpawnError, taskSessionName, devServerSessionName, isDevServerSessionOfTask, parseDev3SessionName, PANE_START_COMMAND_FORMAT, SESSION_OVERVIEW_FORMAT } from "../../tmux";
@@ -763,7 +764,11 @@ async function startOneDevServer(
 	// devScript to crash-loop on bind with only a downstream 502 as evidence.
 	// The start still proceeds (the script may not use the squatted port) —
 	// the conflict is logged here and returned in the status' portConflicts.
-	const preStartConflicts = await findPortHolders(ownPorts);
+	const preStartHolders = await findPortHolders(ownPorts);
+	// This worktree's own container, still up from the previous run, is not a
+	// squatter: its runtime daemon keeps the same PID across the recreate.
+	const ownContainerPorts = preStartHolders.length > 0 ? await findWorktreeContainerPorts(worktreePath) : new Set<number>();
+	const preStartConflicts = preStartHolders.filter((holder) => !ownContainerPorts.has(holder.port));
 	// The snapshot is what later lets status tell "published for this dev
 	// server by a container runtime" from "squatted by something else".
 	recordDevServerStart(task.id, server.name, ownPorts, preStartConflicts);

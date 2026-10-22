@@ -4,7 +4,7 @@ import type { Project, Task, TaskDiffFile, TaskDiffResponse } from "../../../sha
 import { I18nProvider } from "../../i18n";
 import type { NavigationGuard } from "../../navigation-guard";
 import { waitForTicks } from "../../test-utils/wait-for-ticks";
-import TaskDiffViewer from "../TaskDiffViewer";
+import TaskDiffViewer, { collectDiffSearchCandidates, DIFF_SEARCH_MAX_EDIT_LENGTH } from "../TaskDiffViewer";
 
 vi.mock("../../rpc", () => ({
 	api: {
@@ -1179,6 +1179,53 @@ describe("TaskDiffViewer", () => {
 
 			await waitFor(() => expect(screen.getByText("2 / 2")).toBeInTheDocument());
 			await waitFor(() => expect(currentRow()).toBe("new:15"));
+		});
+
+		it("lists a near-total rewrite as every old line removed, then every new line added", () => {
+			const count = DIFF_SEARCH_MAX_EDIT_LENGTH + 100;
+			const file = wholeFilePayload(
+				Array.from({ length: count }, (_, i) => `old ${i + 1}`).join("\n"),
+				Array.from({ length: count }, (_, i) => `new ${i + 1}`).join("\n"),
+			).files[0];
+
+			const candidates = collectDiffSearchCandidates(file);
+
+			expect(candidates).toHaveLength(count * 2);
+			expect(candidates[0]).toMatchObject({ change: "-", side: "oldFile", lineNumber: 1, text: "old 1" });
+			expect(candidates[count - 1]).toMatchObject({ change: "-", lineNumber: count });
+			expect(candidates[count]).toMatchObject({ change: "+", side: "newFile", lineNumber: 1, text: "new 1" });
+		});
+
+		it("gives a file with identical content no content hits, only its path", async () => {
+			const same = rows(10, { 4: "row 4 needle" });
+			expect(collectDiffSearchCandidates(wholeFilePayload(same, same).files[0])).toEqual([]);
+
+			await searchFor("needle", wholeFilePayload(same, same));
+
+			await waitFor(() => expect(screen.getByText("No matches")).toBeInTheDocument());
+		});
+
+		it("does not expand another file while a refined query still points at the same hit", async () => {
+			const file = (id: string, hitLine: number) => ({
+				...wholeFilePayload(rows(20, { [hitLine]: `row ${hitLine} alpha` }), rows(20, { 1: "row 1 edited", [hitLine]: `row ${hitLine} alpha` })).files[0],
+				id,
+				displayPath: id,
+				oldPath: id,
+				newPath: id,
+			});
+			// New line 12 of file A is mock row 20 + 11.
+			mockSearchHooks.hiddenLineIndexes.add(31);
+			const user = await searchFor("alp", { ...wholeFilePayload("", ""), files: [file("src/a.ts", 12), file("src/b.ts", 5)] });
+
+			await waitFor(() => expect(screen.getByText("1 / 2")).toBeInTheDocument());
+			await user.click(screen.getByRole("button", { name: "Next match" }));
+			await waitFor(() => expect(screen.getByText("2 / 2")).toBeInTheDocument());
+			mockSearchHooks.onAllExpand.mockClear();
+
+			await user.type(screen.getByPlaceholderText("Search diff..."), "h");
+
+			await waitFor(() => expect(screen.getByText("2 / 2")).toBeInTheDocument());
+			expect(mockSearchHooks.onAllExpand).not.toHaveBeenCalled();
 		});
 
 		it("expands the file when the hit sits on a folded-away line", async () => {

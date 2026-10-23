@@ -19,10 +19,10 @@ function sample(overrides: Partial<PrWatchSample> = {}): PrWatchSample {
 	return { number: 7, state: "OPEN", headRefOid: HEAD, checks: green, ...overrides };
 }
 
-/** Local repo facts: which head is an ancestor of which; any unlisted pair is not (an unknown commit included). */
-function fakeGit(opts: { ancestors?: Array<[string, string]> } = {}): PrWatchGit {
+/** Local repo facts: which head is an ancestor of which (any unlisted pair is not, an unknown commit included), and the branch's pushed tip. */
+function fakeGit(opts: { ancestors?: Array<[string, string]>; tip?: string | null } = {}): PrWatchGit {
 	const ancestors = opts.ancestors ?? [];
-	return { isAncestor: async (a, d) => ancestors.some(([x, y]) => x === a && y === d) };
+	return { tip: opts.tip ?? null, isAncestor: async (a, d) => ancestors.some(([x, y]) => x === a && y === d) };
 }
 
 const notices = (out: { fired: Array<{ notice: unknown }> }) => out.fired.map(({ notice }) => notice);
@@ -31,7 +31,7 @@ const EMPTY = { fired: [], removeIds: [], patches: {} };
 describe("evaluatePrWatches", () => {
 	it("fires an `until ci` watch green once every check finished passing", async () => {
 		const out = await evaluatePrWatches([watch("ci")], sample(), fakeGit());
-		expect(notices(out)).toEqual([{ kind: "ci-passed", sha: HEAD }]);
+		expect(notices(out)).toEqual([{ kind: "ci-passed", sha: HEAD, totalChecks: 2 }]);
 		expect(out.removeIds).toEqual(["w-ci"]);
 	});
 
@@ -139,6 +139,21 @@ describe("evaluatePrWatches", () => {
 	it("says nothing about an open sample without a head", async () => {
 		const out = await evaluatePrWatches([watch("ci")], sample({ headRefOid: null }), fakeGit());
 		expect(out).toEqual(EMPTY);
+	});
+
+	it("ignores a late sample of the old head after the agent pushed a new one, then judges the new head", async () => {
+		const git = fakeGit({ tip: NEWER, ancestors: [[HEAD, NEWER]] });
+
+		const late = await evaluatePrWatches([watch("ci")], sample({ headRefOid: HEAD }), git);
+		expect(late).toEqual(EMPTY);
+
+		const current = await evaluatePrWatches([watch("ci")], sample({ headRefOid: NEWER }), git);
+		expect(notices(current)).toEqual([{ kind: "ci-passed", sha: NEWER, totalChecks: 2 }]);
+	});
+
+	it("still reports a merge from a sample of an older head", async () => {
+		const out = await evaluatePrWatches([watch("ci")], sample({ state: "MERGED" }), fakeGit({ tip: NEWER, ancestors: [[HEAD, NEWER]] }));
+		expect(notices(out)).toEqual([{ kind: "merged" }]);
 	});
 
 	it("ignores a sample of a different PR number", async () => {

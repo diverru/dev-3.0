@@ -287,7 +287,7 @@ describe("wrapPrStatusMessage", () => {
 		expect(out).toBe(
 			[
 				"<dev3-pr-status>",
-				"PR #2041: CI failed on 1a2b3c4 — 2 of 14 checks failed; see `gh pr checks 2041`.",
+				"PR #2041: CI finished on 1a2b3c4: 2 of 14 checks GitHub listed failed; see `gh pr checks 2041`.",
 				URL,
 				"Watch until merged stays active. Act per your task rules.",
 				"</dev3-pr-status>",
@@ -301,15 +301,15 @@ describe("wrapPrStatusMessage", () => {
 		expect(out).toContain("No watch is left. Act per your task rules.");
 	});
 
-	it("words green and closed as short statements", () => {
+	it("words green as what was true: all the checks GitHub listed finished and passed", () => {
 		const text = (notice: PrStatusNotice) => wrapPrStatusMessage({ prNumber: 5, url: URL, notices: [notice], remaining: [] });
-		expect(text({ kind: "ci-passed", sha: "abcdef0123" })).toContain("PR #5: CI passed on abcdef0.");
+		expect(text({ kind: "ci-passed", sha: "abcdef0123", totalChecks: 9 })).toContain("PR #5: CI finished on abcdef0: all 9 checks GitHub listed passed.");
 		expect(text({ kind: "closed" })).toContain("PR #5 closed without merge.");
 	});
 
 	it("collapses identical notices into one sentence", () => {
 		const out = wrapPrStatusMessage({ prNumber: 2041, url: URL, notices: [failed, failed], remaining: [] });
-		expect(out.match(/CI failed/g)).toHaveLength(1);
+		expect(out.match(/CI finished/g)).toHaveLength(1);
 	});
 
 	it("drops a url that is not an https link", () => {

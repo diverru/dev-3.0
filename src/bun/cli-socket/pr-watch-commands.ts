@@ -14,7 +14,11 @@ function noPr(message: string): Error {
 	return new Error(`${PR_WATCH_NO_PR_PREFIX}${message}`);
 }
 
-/** `--pr N` must be this task's branch; otherwise the open PR of the branch, else the one recorded on the task. */
+/**
+ * The one PR the poller samples is the open PR of the task's branch, so that is the
+ * only PR a watch may name. A recorded PR that is no longer open is never a fallback:
+ * the agent would be told about a finished PR while it waits for the new one.
+ */
 async function resolveWatchedPr(
 	project: Project,
 	task: Task,
@@ -22,26 +26,15 @@ async function resolveWatchedPr(
 	explicit: number | null,
 ): Promise<{ number: number; url: string }> {
 	const branch = (await git.getCurrentBranch(worktree)) ?? task.branchName ?? "";
-	if (explicit !== null) {
-		const view = await github.runGitHub(project, worktree, ["pr", "view", String(explicit), "--json", "number,url,headRefName"], {
-			timeoutMs: PR_WATCH_GH_TIMEOUT_MS,
-		});
-		let parsed: { number?: unknown; url?: unknown; headRefName?: unknown } | null = null;
-		try {
-			parsed = view.ok ? JSON.parse(view.stdout) : null;
-		} catch {
-			// Unparseable output reads as "not found" below.
-		}
-		if (!parsed || parsed.number !== explicit) throw noPr(`Pull request #${explicit} was not found. Check the number, or drop --pr.`);
-		if (parsed.headRefName !== branch) {
-			throw noPr(`Pull request #${explicit} is not from this task's branch (${branch || "unknown"}), so dev3 would never see it change.`);
-		}
-		return { number: explicit, url: typeof parsed.url === "string" ? parsed.url : "" };
-	}
+	const scope = "Watching follows the open pull request of this task's own branch (a review target is not supported).";
 	const { pr } = await github.findOpenPullRequest(project, worktree, branch, { timeoutMs: PR_WATCH_GH_TIMEOUT_MS });
-	if (pr) return { number: pr.number, url: pr.url };
-	if (task.prNumber != null) return { number: task.prNumber, url: task.prUrl ?? "" };
-	throw noPr(`No open pull request found for ${branch || "this task"}. Open it with \`dev3 pr create\`, or pass --pr <N>.`);
+	if (!pr) {
+		throw noPr(`No open pull request found for ${branch || "this task"} (or GitHub did not answer in time). ${scope} Open it with \`dev3 pr create\`, or try again.`);
+	}
+	if (explicit !== null && explicit !== pr.number) {
+		throw noPr(`Pull request #${explicit} is not the open pull request of ${branch} (that is #${pr.number}). ${scope}`);
+	}
+	return { number: pr.number, url: pr.url };
 }
 
 function watchListing(watch: PrWatch) {

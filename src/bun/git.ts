@@ -1675,6 +1675,12 @@ export async function getHeadSha(worktreePath: string): Promise<string | null> {
 	return result.stdout.trim() || null;
 }
 
+/** The commit the branch's upstream (`origin/x`, or a fork remote's) points at; null without an upstream. */
+export async function getUpstreamSha(worktreePath: string): Promise<string | null> {
+	const result = await run(["git", "rev-parse", "--verify", "--quiet", "@{upstream}"], worktreePath);
+	return result.ok ? result.stdout.trim() || null : null;
+}
+
 export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
 	const result = await run(["git", "status", "--porcelain"], worktreePath);
 	if (!result.ok) return false;

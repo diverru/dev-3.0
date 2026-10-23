@@ -103,10 +103,10 @@ function prNoticeSentence(prNumber: number, notice: PrStatusNotice): string {
 		case "closed":
 			return `PR #${prNumber} closed without merge.`;
 		case "ci-passed":
-			return `PR #${prNumber}: CI passed on ${notice.sha.slice(0, 7)}.`;
+			return `PR #${prNumber}: CI finished on ${notice.sha.slice(0, 7)}: all ${notice.totalChecks} checks GitHub listed passed.`;
 		case "ci-failed":
 			// No check names: they are written by whoever owns the workflow file, and this text lands in the agent's prompt.
-			return `PR #${prNumber}: CI failed on ${notice.sha.slice(0, 7)} — ${notice.failedCount} of ${notice.totalChecks} checks failed; see \`gh pr checks ${prNumber}\`.`;
+			return `PR #${prNumber}: CI finished on ${notice.sha.slice(0, 7)}: ${notice.failedCount} of ${notice.totalChecks} checks GitHub listed failed; see \`gh pr checks ${prNumber}\`.`;
 	}
 }
 

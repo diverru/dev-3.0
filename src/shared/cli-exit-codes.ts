@@ -245,6 +245,6 @@ export const CLI_EXIT_CODE_DEFINITIONS = [
 		constant: "CLI_EXIT_CODE_PR_WATCH_NO_PR",
 		code: CLI_EXIT_CODE_PR_WATCH_NO_PR,
 		description:
-			"`dev3 pr watch` found no pull request to watch, so NOTHING was subscribed: the task's branch has no open PR, no PR number is recorded for the task, or the `--pr <N>` number does not exist. Open the PR first (`dev3 pr create`), or pass `--pr <N>` when it was opened another way, then run it again. Distinct from exit 1 so an agent that opened a PR a moment ago can retry once GitHub lists it instead of treating this as a failed command.",
+			"`dev3 pr watch` found no pull request to watch, so NOTHING was subscribed: the task's branch has no open PR (or GitHub did not answer in time), or `--pr <N>` is not that open PR. Watching follows the open PR of the task's own branch only; a review target is not supported. Open the PR first (`dev3 pr create`), then run it again. Distinct from exit 1 so an agent that opened a PR a moment ago can retry once GitHub lists it instead of treating this as a failed command.",
 	},
 ] as const;

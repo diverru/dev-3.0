@@ -13,6 +13,8 @@ export interface PrWatchSample {
 
 /** What the verdict needs from the local repository. */
 export interface PrWatchGit {
+	/** The newest commit the task's branch has pushed (its upstream, else HEAD); null when unreadable. */
+	tip: string | null;
 	/** True when `ancestor` is an ancestor of `descendant`; false too when either commit is unknown here. */
 	isAncestor(ancestor: string, descendant: string): Promise<boolean>;
 }
@@ -54,6 +56,8 @@ export async function evaluatePrWatches(
 
 	const { total, pending, failed } = summarizeChecks(sample.checks);
 	const ciDone = total > 0 && pending === 0;
+	// A late sample still showing a head the agent has since pushed past says nothing about the new one.
+	if (git.tip && git.tip !== head && (await git.isAncestor(head, git.tip))) return outcome;
 	for (const watch of mine) {
 		if (watch.headSha !== head) {
 			if (await git.isAncestor(head, watch.headSha)) continue;
@@ -62,7 +66,7 @@ export async function evaluatePrWatches(
 		if (!ciDone) continue;
 		const failedNotice: PrStatusNotice = { kind: "ci-failed", sha: head, failedCount: failed.length, totalChecks: total };
 		if (watch.until === "ci") {
-			outcome.fired.push({ watch, notice: failed.length > 0 ? failedNotice : { kind: "ci-passed", sha: head } });
+			outcome.fired.push({ watch, notice: failed.length > 0 ? failedNotice : { kind: "ci-passed", sha: head, totalChecks: total } });
 			outcome.removeIds.push(watch.id);
 			delete outcome.patches[watch.id];
 		} else if (failed.length > 0 && watch.failedNotifiedHead !== head) {

@@ -23,7 +23,7 @@ export const PR_WATCH_NO_PR_PREFIX = "pr-watch-no-pr: ";
 
 /** What happened to the PR, as the agent is told. */
 export type PrStatusNotice =
-	| { kind: "ci-passed"; sha: string }
+	| { kind: "ci-passed"; sha: string; totalChecks: number }
 	| { kind: "ci-failed"; sha: string; failedCount: number; totalChecks: number }
 	| { kind: "merged" }
 	| { kind: "closed" };

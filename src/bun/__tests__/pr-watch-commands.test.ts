@@ -58,35 +58,35 @@ describe("pr.watch.add", () => {
 		expect(persistTaskPrIdentity).toHaveBeenCalledWith(project, task, 7, "https://github.com/a/b/pull/7");
 	});
 
-	it("falls back to the PR recorded on the task when the branch has no open PR", async () => {
+	it("accepts --pr only when it is the open PR of the branch", async () => {
+		await add({ prNumber: 7 });
+		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ prNumber: 7 });
+	});
+
+	it("refuses --pr of a closed PR while another one is open on the branch", async () => {
 		task = { ...task, prNumber: 5, prUrl: "https://github.com/a/b/pull/5" } as Task;
-		vi.mocked(github.findOpenPullRequest).mockResolvedValue({ pr: null, isGitHub: true });
-		await add();
-		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ prNumber: 5 });
-	});
 
-	it("lets --pr win when that PR is from the task's branch", async () => {
-		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify({ number: 9, url: "https://github.com/a/b/pull/9", headRefName: "feat/x" }), stderr: "", code: 0 });
+		await expect(add({ prNumber: 5 })).rejects.toThrow(PR_WATCH_NO_PR_PREFIX);
 
-		await add({ prNumber: 9 });
-
-		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ prNumber: 9 });
-	});
-
-	it("refuses --pr from another branch, and records nothing about it", async () => {
-		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify({ number: 9, url: "https://github.com/a/b/pull/9", headRefName: "other" }), stderr: "", code: 0 });
-
-		await expect(add({ prNumber: 9 })).rejects.toThrow(PR_WATCH_NO_PR_PREFIX);
 		expect(persistTaskPrIdentity).not.toHaveBeenCalled();
 		expect(addPrWatch).not.toHaveBeenCalled();
 	});
 
-	it("caps every gh call it makes", async () => {
+	it("never falls back to a recorded PR that is not open, e.g. when gh failed or timed out", async () => {
+		task = { ...task, prNumber: 1, prUrl: "https://github.com/a/b/pull/1" } as Task;
+		vi.mocked(github.findOpenPullRequest).mockResolvedValue({ pr: null, isGitHub: true });
+
+		await expect(add()).rejects.toThrow(PR_WATCH_NO_PR_PREFIX);
+
+		expect(persistTaskPrIdentity).not.toHaveBeenCalled();
+		expect(addPrWatch).not.toHaveBeenCalled();
+	});
+
+	it("caps its gh call, and says watching is for the task's own PR", async () => {
 		await add();
 		expect(vi.mocked(github.findOpenPullRequest).mock.calls[0][3]).toEqual({ timeoutMs: PR_WATCH_GH_TIMEOUT_MS });
-		vi.mocked(github.runGitHub).mockResolvedValue({ ok: true, stdout: JSON.stringify({ number: 9, url: "", headRefName: "feat/x" }), stderr: "", code: 0 });
-		await add({ prNumber: 9 });
-		expect(vi.mocked(github.runGitHub).mock.calls[0][3]).toEqual({ timeoutMs: PR_WATCH_GH_TIMEOUT_MS });
+		vi.mocked(github.findOpenPullRequest).mockResolvedValue({ pr: null, isGitHub: true });
+		await expect(add()).rejects.toThrow("review target is not supported");
 	});
 
 	it("binds the watch to the calling agent only for the caller's own task", async () => {
@@ -99,12 +99,6 @@ describe("pr.watch.add", () => {
 
 		await add({ sourceTaskId: "someone-else", sourcePaneId: "%3", sourcePid: 99 });
 		expect(vi.mocked(addPrWatch).mock.calls[1][2]).not.toHaveProperty("author");
-	});
-
-	it("fails with the no-PR prefix when --pr names nothing", async () => {
-		vi.mocked(github.runGitHub).mockResolvedValue({ ok: false, stdout: "", stderr: "not found", code: 1 });
-		await expect(add({ prNumber: 99 })).rejects.toThrow(PR_WATCH_NO_PR_PREFIX);
-		expect(addPrWatch).not.toHaveBeenCalled();
 	});
 
 	it("fails with the no-PR prefix when the branch has no open PR, and stores nothing", async () => {

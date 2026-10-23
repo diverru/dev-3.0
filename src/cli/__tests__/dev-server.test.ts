@@ -65,6 +65,7 @@ const STATUS: DevServerStatus = {
 		publishedPorts: [],
 		portConflicts: [],
 		extraEnvKeys: [],
+		scriptArgs: [],
 		resourceUsage: { cpu: 3.1, rss: 104857600 },
 	}],
 };
@@ -923,5 +924,99 @@ describe("dev-server logs", () => {
 		await expect(handleDevServer("logs", parseArgs([]), SOCKET, CTX))
 			.rejects.toThrow(`EXIT_${CLI_EXIT_CODE_DEV_SERVER_NAME_REQUIRED}`);
 		expect(stderrOutput).toContain("api, web");
+	});
+});
+
+describe("dev-server script args after --", () => {
+	const startParams = { taskId: CTX.taskId, projectId: CTX.projectId };
+
+	it("sends the args verbatim on start", async () => {
+		mockSend.mockResolvedValue(okResp(withServer({ scriptArgs: ["--own-db", "a b"] })));
+
+		await handleDevServer("start", parseArgs(["--", "--own-db", "a b"]), SOCKET, CTX);
+
+		expect(mockSend).toHaveBeenCalledWith(SOCKET, "devServer.start", {
+			...startParams,
+			args: ["--own-db", "a b"],
+		}, { retryEmptyResponse: true });
+	});
+
+	it("sends no args on restart without --, so the last ones are reused", async () => {
+		mockSend.mockResolvedValue(okResp(STATUS));
+
+		await handleDevServer("restart", parseArgs([]), SOCKET, CTX);
+
+		expect(mockSend.mock.calls[0][2]).not.toHaveProperty("args");
+	});
+
+	it("sends an empty list for a bare `restart --`, which clears them", async () => {
+		mockSend.mockResolvedValue(okResp(withServer({ scriptArgs: [] })));
+
+		await handleDevServer("restart", parseArgs(["--"]), SOCKET, CTX);
+
+		expect(mockSend.mock.calls[0][2]).toEqual({ ...startParams, args: [] });
+	});
+
+	it("names one server together with the args", async () => {
+		mockSend.mockResolvedValue(okResp(withServer({ name: "api", isDefault: false, scriptArgs: ["--verbose"] })));
+
+		await handleDevServer("start", parseArgs(["api", "--", "--verbose"]), SOCKET, CTX);
+
+		expect(mockSend.mock.calls[0][2]).toEqual({ ...startParams, server: "api", args: ["--verbose"] });
+	});
+
+	it("refuses --all together with args and sends nothing", async () => {
+		await expect(
+			handleDevServer("start", parseArgs(["--all", "--", "--x"]), SOCKET, CTX),
+		).rejects.toThrow("EXIT_3");
+		expect(mockSend).not.toHaveBeenCalled();
+		expect(stderrOutput).toContain("name it instead of using --all");
+	});
+
+	it.each(["stop", "status", "logs"])("refuses args on %s", async (subcommand) => {
+		await expect(
+			handleDevServer(subcommand, parseArgs(["--", "--x"]), SOCKET, CTX),
+		).rejects.toThrow("EXIT_3");
+		expect(mockSend).not.toHaveBeenCalled();
+		expect(stderrOutput).toContain("takes no script arguments");
+	});
+
+	it("prints the args in full with shell quoting", async () => {
+		mockSend.mockResolvedValue(okResp(withServer({ scriptArgs: ["--own-db", "a b", "it's"] })));
+
+		await handleDevServer("status", parseArgs([]), SOCKET, CTX);
+
+		expect(stdoutOutput).toContain("Script Args:");
+		expect(stdoutOutput).toContain(`--own-db 'a b' 'it'\\''s'`);
+	});
+
+	it("omits the Script Args line when there are none", async () => {
+		mockSend.mockResolvedValue(okResp(STATUS));
+
+		await handleDevServer("status", parseArgs([]), SOCKET, CTX);
+
+		expect(stdoutOutput).not.toContain("Script Args:");
+	});
+
+	it("fails when an older app answers without scriptArgs, because it ignored the args", async () => {
+		const { scriptArgs: _dropped, ...legacy } = STATUS.servers[0];
+		mockSend.mockResolvedValue(okResp({ ...STATUS, servers: [legacy] }));
+
+		await expect(
+			handleDevServer("start", parseArgs(["--", "--x"]), SOCKET, CTX),
+		).rejects.toThrow("EXIT_1");
+		expect(stderrOutput).toContain("older than this CLI");
+	});
+
+	it("does not repeat the args on the --wait status polls", async () => {
+		mockSend.mockResolvedValue(okResp(withServer({
+			scriptArgs: ["--x"],
+			devPorts: [{ port: 50001, pid: 81298, processName: "bun" }],
+		})));
+
+		await handleDevServer("start", parseArgs(["--wait", "--", "--x"]), SOCKET, CTX);
+
+		const statusCall = mockSend.mock.calls.find(([, method]) => method === "devServer.status");
+		expect(statusCall?.[2]).toEqual(startParams);
 	});
 });

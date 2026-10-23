@@ -174,6 +174,20 @@ describe("liveAgentPaneIds — which panes really run an agent", () => {
 		expect(await liveAgentPaneIds(task([pane("%1", "conv-a")]))).toEqual([]);
 	});
 
+	it("tmux: a shell running a foreground program is not an agent, alone or beside one", async () => {
+		procs.push({ pid: 600, ppid: 50, args: "-zsh" }, { pid: 601, ppid: 600, args: "tail -f /tmp/dev-server.log" });
+		panes["%6"] = 600;
+
+		expect(await liveAgentPaneIds(task([pane("%6", null)]))).toEqual([]);
+		expect(await liveAgentPaneIds(task([pane("%1", "conv-a"), pane("%6", null)]))).toEqual(["%1"]);
+	});
+
+	it("native: a split's own shell (`$SHELL`, no argv) running a program is not an agent beside a real one", async () => {
+		procs.push({ pid: 600, ppid: 50, args: "/bin/zsh" }, { pid: 601, ppid: 600, args: "bun test" });
+		nativePanes(["pane-1", 100, true], ["pane-2", 600, true]);
+		expect(await liveAgentPaneIds(native())).toEqual(["pane-1"]);
+	});
+
 	it("tmux: both recorded agents count", async () => {
 		expect(await liveAgentPaneIds(task())).toEqual(["%1", "%2"]);
 	});

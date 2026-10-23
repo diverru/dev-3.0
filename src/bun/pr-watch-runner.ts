@@ -145,18 +145,25 @@ async function deliverFired(project: Project, taskId: string, outcome: PrWatchOu
 	}
 
 	for (const [paneId, { fired, keys }] of byPane) {
-		const ids = new Set(fired.map(({ watch }) => watch.id));
+		// Re-read before every send: the one before it may have taken time, and `--off` or a
+		// move to a question can land in between.
+		const fresh = await data.getTask(project, taskId);
+		if (isTerminal(fresh) || !fresh.worktreePath || !agentCanReceive(fresh)) return;
+		const heldNow = new Set((fresh.prWatches ?? []).map((watch) => watch.id));
+		const live = fired.filter(({ watch }) => heldNow.has(watch.id));
+		if (live.length === 0) continue;
+		const ids = new Set(live.map(({ watch }) => watch.id));
 		const settle = (current: PrWatch[]) => applyPrWatchOutcome(current, {
 			removeIds: outcome.removeIds.filter((id) => ids.has(id)),
 			patches: Object.fromEntries(Object.entries(outcome.patches).filter(([id]) => ids.has(id))),
 		});
-		const remaining = [...new Set(settle(task.prWatches ?? []).filter((watch) => keys.includes(subscriberKey(watch))).map((watch) => watch.until))];
-		const notices = fired.map(({ notice }) => notice);
+		const remaining = [...new Set(settle(fresh.prWatches ?? []).filter((watch) => keys.includes(subscriberKey(watch))).map((watch) => watch.until))];
+		const notices = live.map(({ notice }) => notice);
 		try {
 			// Loaded on demand: the scheduler pulls in the whole prompt-delivery stack.
 			const { sendMessageImmediately } = await import("./scheduled-message-scheduler");
 			const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining });
-			await sendMessageImmediately(task, text, { kind: "pane", paneId }, null, { subject: prStatusSubject(prNumber, notices), origin: "dev3" });
+			await sendMessageImmediately(fresh, text, { kind: "pane", paneId }, null, { subject: prStatusSubject(prNumber, notices), origin: "dev3" });
 		} catch (err) {
 			for (const key of keys) retryAfter.set(`${taskId}|${key}`, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
 			log.warn("PR watch message not delivered; the watch stays", { taskId: taskId.slice(0, 8), error: String(err) });

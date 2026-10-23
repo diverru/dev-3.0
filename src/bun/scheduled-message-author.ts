@@ -120,8 +120,8 @@ async function paneRunsAgent(task: Task, paneId: string): Promise<PaneRoot | nul
  * The panes of the task that run an agent right now, or null when that cannot be told.
  * Candidates come from the backend: tmux, the recorded agent panes that still exist;
  * native, every live pane the coordinator knows (extra agents are not recorded in
- * `sessionState`). A pane counts when it has a non-shell child of its launch script, so
- * a stale record and a plain shell split never do. Windows has no process table: there
+ * `sessionState`). A pane counts when its launch script has a non-shell child; a stale
+ * record and a shell split (even one running a program) never do. Windows has no process table: there
  * only a lone coordinator pane is provably the agent.
  */
 export async function liveAgentPaneIds(task: Task): Promise<string[] | null> {
@@ -145,6 +145,9 @@ export async function liveAgentPaneIds(task: Task): Promise<string[] | null> {
 		const root = await paneRoot(task, paneId);
 		if (!root) continue;
 		if (!table.cmdlines.has(root.rootPid)) return null; // `ps` failed or raced the pane
+		// A pane whose root is a bare interactive shell is a shell, whatever it runs: an agent pane's
+		// root is its launch script, which only becomes such a shell once the agent has ended.
+		if (isHandedOverShell(table, root.rootPid)) continue;
 		if ((table.childrenOf.get(root.rootPid) ?? []).some((pid) => !isShell(table, pid))) live.push(paneId);
 	}
 	return live;

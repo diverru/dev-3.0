@@ -284,6 +284,50 @@ describe("runPrWatches", () => {
 		expect(lastStoredWatches()).toBeNull();
 	});
 
+	describe("between two sends to different panes", () => {
+		const a = { paneId: "%1", sessionId: null, paneToken: "t", agentProcess: "1@x" };
+		const b = { paneId: "%2", sessionId: null, paneToken: "t", agentProcess: "2@y" };
+		const merged = { ...greenSample, state: "MERGED" };
+
+		beforeEach(() => {
+			current = task({ prWatches: [watch("ci", { author: a }), watch("merged", { author: b })] });
+			vi.mocked(resolveScheduledMessageAuthorPane).mockImplementation(async (_t, author) => ({ ok: true, paneId: author.paneId }));
+		});
+
+		it("does not send the second when the task started waiting on a question", async () => {
+			vi.mocked(sendMessageImmediately).mockImplementationOnce(async () => {
+				current = { ...current, status: "user-questions" } as Task;
+				return { status: "held", spilledPath: null };
+			});
+
+			await runPrWatches(project, "t1", merged, URL);
+
+			expect(sendMessageImmediately).toHaveBeenCalledTimes(1);
+		});
+
+		it("does not send the second when its watch was removed, and reports only what is still watched", async () => {
+			vi.mocked(sendMessageImmediately).mockImplementationOnce(async () => {
+				current = { ...current, prWatches: null } as Task;
+				return { status: "held", spilledPath: null };
+			});
+
+			await runPrWatches(project, "t1", merged, URL);
+
+			expect(sendMessageImmediately).toHaveBeenCalledTimes(1);
+		});
+
+		it("builds the second message's last line from the fresh watch list (a watch added meanwhile still stays)", async () => {
+			vi.mocked(sendMessageImmediately).mockImplementationOnce(async () => {
+				current = { ...current, prWatches: [watch("merged", { author: b }), watch("ci", { id: "w-new", author: b })] } as Task;
+				return { status: "held", spilledPath: null };
+			});
+
+			await runPrWatches(project, "t1", merged, URL);
+
+			expect(vi.mocked(sendMessageImmediately).mock.calls[1][1]).toContain("Watch until ci stays active");
+		});
+	});
+
 	it("keeps the watch when no pane runs an agent, as when a stale record lies beside a live shell", async () => {
 		vi.mocked(liveAgentPaneIds).mockResolvedValue([]);
 		await runPrWatches(project, "t1", greenSample, URL);

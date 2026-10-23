@@ -13,8 +13,8 @@ export interface PrWatchSample {
 
 /** What the verdict needs from the local repository. */
 export interface PrWatchGit {
-	/** The newest commit the task's branch has pushed (its upstream, else HEAD); null when unreadable. */
-	tip: string | null;
+	/** What the remotes last had for the task's own branch; empty when it was never pushed. */
+	tips: readonly string[];
 	/** True when `ancestor` is an ancestor of `descendant`; false too when either commit is unknown here. */
 	isAncestor(ancestor: string, descendant: string): Promise<boolean>;
 }
@@ -57,7 +57,9 @@ export async function evaluatePrWatches(
 	const { total, pending, failed } = summarizeChecks(sample.checks);
 	const ciDone = total > 0 && pending === 0;
 	// A late sample still showing a head the agent has since pushed past says nothing about the new one.
-	if (git.tip && git.tip !== head && (await git.isAncestor(head, git.tip))) return outcome;
+	for (const tip of git.tips) {
+		if (tip !== head && (await git.isAncestor(head, tip))) return outcome;
+	}
 	for (const watch of mine) {
 		if (watch.headSha !== head) {
 			if (await git.isAncestor(head, watch.headSha)) continue;

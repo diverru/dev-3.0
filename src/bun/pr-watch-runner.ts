@@ -77,8 +77,9 @@ async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatc
 	const worktree = task.worktreePath;
 	if (watches.length === 0 || !worktree || isTerminal(task)) return;
 
+	const branch = await git.getCurrentBranch(worktree);
 	const outcome = await evaluatePrWatches(watches, sample, {
-		tip: (await git.getUpstreamSha(worktree)) ?? (await git.getHeadSha(worktree)),
+		tips: branch ? await git.getRemoteBranchTips(worktree, branch) : [],
 		isAncestor: (ancestor, descendant) => git.isRefMergedInto(worktree, ancestor, descendant),
 	});
 	const firedIds = new Set(outcome.fired.map(({ watch }) => watch.id));
@@ -88,15 +89,7 @@ async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatc
 	}
 	if (outcome.fired.length === 0) return;
 	if (!agentCanReceive(task)) return;
-
-	const groups = new Map<string, PrWatchOutcome["fired"]>();
-	for (const fired of outcome.fired) {
-		const key = subscriberKey(fired.watch);
-		groups.set(key, [...(groups.get(key) ?? []), fired]);
-	}
-	for (const group of groups.values()) {
-		if (!(await deliverGroup(project, taskId, group, outcome, sample.number, prUrl))) return;
-	}
+	await deliverFired(project, taskId, outcome, sample.number, prUrl);
 }
 
 /** The whole identity of the subscribing agent: a pane can host one agent after another. */
@@ -105,58 +98,71 @@ function subscriberKey(watch: PrWatch): string {
 	return author ? JSON.stringify([author.paneId, author.sessionId, author.paneToken, author.agentProcess]) : "";
 }
 
-/** One message to one subscriber. False when the send failed or cannot be made now, so the rest wait. */
-async function deliverGroup(
-	project: Project,
-	taskId: string,
-	group: PrWatchOutcome["fired"],
-	outcome: PrWatchOutcome,
-	prNumber: number,
-	prUrl: string,
-): Promise<boolean> {
-	const backoffKey = `${taskId}|${subscriberKey(group[0].watch)}`;
-	if ((retryAfter.get(backoffKey) ?? 0) > Date.now()) return true;
+type Fired = PrWatchOutcome["fired"];
+
+/**
+ * Type one message per target pane. A subscriber's own pane when it still runs; else
+ * the task's only live agent pane (likely the same agent, resumed). With zero, several
+ * or unknown agent panes and no proof, the watch waits and retries: a sibling is never guessed.
+ */
+async function deliverFired(project: Project, taskId: string, outcome: PrWatchOutcome, prNumber: number, prUrl: string): Promise<void> {
 	// Re-read right before typing: a `--off`, another run, or the agent's own state may have changed since.
 	const task = await data.getTask(project, taskId);
-	if (isTerminal(task) || !task.worktreePath || !agentCanReceive(task)) return false;
+	const worktree = task.worktreePath;
+	if (isTerminal(task) || !worktree || !agentCanReceive(task)) return;
 	const held = new Set((task.prWatches ?? []).map((watch) => watch.id));
-	const live = group.filter(({ watch }) => held.has(watch.id));
-	if (live.length === 0) return true;
 
-	const ids = new Set(live.map(({ watch }) => watch.id));
-	const settle = (current: PrWatch[]) => applyPrWatchOutcome(current, {
-		removeIds: outcome.removeIds.filter((id) => ids.has(id)),
-		patches: Object.fromEntries(Object.entries(outcome.patches).filter(([id]) => ids.has(id))),
-	});
-	// The subscriber's own pane when it still runs; else the task's only agent pane (likely
-	// the same agent, resumed). With several panes and no proof, wait: never guess a sibling.
-	let author = live[0].watch.author;
-	if (author && !(await resolvesToLivePane(task, author))) author = undefined;
-	if (!author && (task.sessionState?.panes?.length ?? 0) !== 1) {
-		retryAfter.set(backoffKey, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
-		log.warn("PR watch waits: several agent panes and the subscriber cannot be resolved", { taskId: taskId.slice(0, 8) });
-		return true;
+	const subscribers = new Map<string, Fired>();
+	for (const fired of outcome.fired.filter(({ watch }) => held.has(watch.id))) {
+		const key = subscriberKey(fired.watch);
+		subscribers.set(key, [...(subscribers.get(key) ?? []), fired]);
 	}
 
-	const key = subscriberKey(live[0].watch);
-	const remaining = [...new Set(settle(task.prWatches ?? []).filter((watch) => subscriberKey(watch) === key).map((watch) => watch.until))];
-	const notices = live.map(({ notice }) => notice);
-	try {
-		// Loaded on demand: the scheduler pulls in the whole prompt-delivery stack.
-		const { sendMessageImmediately } = await import("./scheduled-message-scheduler");
-		const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining });
-		await sendMessageImmediately(task, text, null, null, { subject: prStatusSubject(prNumber, notices), origin: "dev3", author });
-	} catch (err) {
-		retryAfter.set(backoffKey, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
-		log.warn("PR watch message not delivered; the watch stays", { taskId: taskId.slice(0, 8), error: String(err) });
-		return false;
+	const byPane = new Map<string, { fired: Fired; keys: string[] }>();
+	let liveAgents: string[] | null | undefined;
+	for (const [key, fired] of subscribers) {
+		const backoffKey = `${taskId}|${key}`;
+		if ((retryAfter.get(backoffKey) ?? 0) > Date.now()) continue;
+		const author = fired[0].watch.author;
+		let paneId: string | undefined;
+		if (author) {
+			const { resolveScheduledMessageAuthorPane } = await import("./scheduled-message-author");
+			const resolved = await resolveScheduledMessageAuthorPane(task, author);
+			if (resolved.ok) paneId = resolved.paneId;
+		}
+		if (!paneId) {
+			const { liveAgentPaneIds } = await import("./scheduled-message-author");
+			liveAgents ??= await liveAgentPaneIds(task);
+			if (liveAgents?.length === 1) paneId = liveAgents[0];
+		}
+		if (!paneId) {
+			retryAfter.set(backoffKey, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
+			log.warn("PR watch waits: no single live agent pane and the subscriber cannot be resolved", { taskId: taskId.slice(0, 8) });
+			continue;
+		}
+		const entry = byPane.get(paneId) ?? { fired: [], keys: [] };
+		byPane.set(paneId, { fired: [...entry.fired, ...fired], keys: [...entry.keys, key] });
 	}
-	retryAfter.delete(backoffKey);
-	await persistWatches(project, taskId, settle);
-	return true;
-}
 
-async function resolvesToLivePane(task: Task, author: NonNullable<PrWatch["author"]>): Promise<boolean> {
-	const { resolveScheduledMessageAuthorPane } = await import("./scheduled-message-author");
-	return (await resolveScheduledMessageAuthorPane(task, author)).ok;
+	for (const [paneId, { fired, keys }] of byPane) {
+		const ids = new Set(fired.map(({ watch }) => watch.id));
+		const settle = (current: PrWatch[]) => applyPrWatchOutcome(current, {
+			removeIds: outcome.removeIds.filter((id) => ids.has(id)),
+			patches: Object.fromEntries(Object.entries(outcome.patches).filter(([id]) => ids.has(id))),
+		});
+		const remaining = [...new Set(settle(task.prWatches ?? []).filter((watch) => keys.includes(subscriberKey(watch))).map((watch) => watch.until))];
+		const notices = fired.map(({ notice }) => notice);
+		try {
+			// Loaded on demand: the scheduler pulls in the whole prompt-delivery stack.
+			const { sendMessageImmediately } = await import("./scheduled-message-scheduler");
+			const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining });
+			await sendMessageImmediately(task, text, { kind: "pane", paneId }, null, { subject: prStatusSubject(prNumber, notices), origin: "dev3" });
+		} catch (err) {
+			for (const key of keys) retryAfter.set(`${taskId}|${key}`, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
+			log.warn("PR watch message not delivered; the watch stays", { taskId: taskId.slice(0, 8), error: String(err) });
+			return;
+		}
+		for (const key of keys) retryAfter.delete(`${taskId}|${key}`);
+		await persistWatches(project, taskId, settle);
+	}
 }

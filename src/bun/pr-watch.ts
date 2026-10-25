@@ -19,6 +19,8 @@ export interface PrWatchSample {
 export interface PrWatchGit {
 	/** What the remotes last had for the task's own branch; empty when it was never pushed. */
 	tips: readonly string[];
+	/** The newest remote refs disagree: no tip is authoritative, so no CI verdict is safe. */
+	ambiguous: boolean;
 	/** Is this commit in the local repository? A head pushed by someone else is not. */
 	hasCommit(sha: string): Promise<boolean>;
 	/** True when `ancestor` is an ancestor of `descendant`; false too when either commit is unknown here. */
@@ -31,7 +33,7 @@ export interface PrWatchOutcome {
 	/** Watches that fired and are done. */
 	removeIds: string[];
 	/** Watches that stay, with the fields that moved. */
-	patches: Record<string, Partial<Pick<PrWatch, "headSha" | "failedNotifiedHead" | "ciSeen">>>;
+	patches: Record<string, Partial<Pick<PrWatch, "headSha" | "failedNotifiedHead" | "ciSeen" | "tipsAtSubscribe">>>;
 }
 
 /**
@@ -44,7 +46,8 @@ export interface PrWatchOutcome {
  * a head it does not have is someone else's push and counts as fresh, with no fetch.
  * A fresh head the watch does not have moves it, except one of the tips the branch had
  * when the watch was made: that is the push the watch was made after. Without tips only
- * a head that is an older ancestor of the watch's is skipped. A finished-looking run
+ * a head that is an older ancestor of the watch's is skipped. When the newest remote refs
+ * disagree no CI verdict is given at all. A finished-looking run
  * counts once seen again a poll later on one head with one total, because some checks
  * join the rollup late.
  */
@@ -72,7 +75,7 @@ export async function evaluatePrWatches(
 		return outcome;
 	}
 	const head = sample.headRefOid;
-	if (state !== "OPEN" || !head) return outcome;
+	if (state !== "OPEN" || !head || git.ambiguous) return outcome;
 
 	const { total, pending, failed } = summarizeChecks(sample.checks);
 	const ciDone = total > 0 && pending === 0;
@@ -83,9 +86,10 @@ export async function evaluatePrWatches(
 	}
 	for (const watch of mine) {
 		if (watch.headSha !== head) {
-			if ((watch.tipsAtSubscribe ?? []).includes(head)) continue;
+			// A subscribe-time tip is the remote's old head while our rebase or amend is unpushed; a watch behind it follows it.
+			if ((watch.tipsAtSubscribe ?? []).includes(head) && !(await git.isAncestor(watch.headSha, head))) continue;
 			if (await git.isAncestor(head, watch.headSha)) continue;
-			outcome.patches[watch.id] = { headSha: head };
+			outcome.patches[watch.id] = { headSha: head, tipsAtSubscribe: undefined };
 		}
 		const sameLook = watch.ciSeen?.head === head && watch.ciSeen.total === total;
 		const confirmed = ciDone && sameLook && now - (watch.ciSeen?.at ?? 0) >= PR_WATCH_CONFIRM_GAP_MS;

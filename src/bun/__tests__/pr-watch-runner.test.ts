@@ -65,7 +65,7 @@ beforeEach(() => {
 	});
 	vi.mocked(git.isRefMergedInto).mockResolvedValue(false);
 	vi.mocked(git.getCurrentBranch).mockResolvedValue("feat/x");
-	vi.mocked(git.getRemoteBranchTips).mockResolvedValue([]);
+	vi.mocked(git.getRemoteBranchTips).mockResolvedValue({ tips: [], ambiguous: false });
 	vi.mocked(git.commitExists).mockResolvedValue(true);
 	vi.mocked(liveAgentPaneIds).mockResolvedValue(["%1"]);
 	vi.mocked(loadSettings).mockResolvedValue({} as Awaited<ReturnType<typeof loadSettings>>);
@@ -151,7 +151,7 @@ describe("runPrWatches", () => {
 
 	it("skips a late sample of a head the branch's own remote ref has since moved past, whatever the upstream is", async () => {
 		const pushed = "3".repeat(40);
-		vi.mocked(git.getRemoteBranchTips).mockResolvedValue([pushed]);
+		vi.mocked(git.getRemoteBranchTips).mockResolvedValue({ tips: [pushed], ambiguous: false });
 		vi.mocked(git.isRefMergedInto).mockImplementation(async (_wt, ancestor, descendant) => ancestor === HEAD && descendant === pushed);
 
 		await runPrWatches(project, "t1", greenSample, URL);

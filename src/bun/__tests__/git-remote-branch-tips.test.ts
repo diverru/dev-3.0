@@ -42,36 +42,58 @@ describe("getRemoteBranchTips", () => {
 		setRef("fork/feat/x", one, 2_000);
 		setRef("origin/feat/x", two, 3_000);
 
-		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([two]);
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual({ tips: [two], ambiguous: false });
 		const three = sh("git commit -q --allow-empty -m three && git rev-parse HEAD", dir);
 		setRef("fork/feat/x", three, 4_000);
-		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([three]);
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual({ tips: [three], ambiguous: false });
 	});
 
-	it("returns both when two refs were updated at the same time", async () => {
+	it("is ambiguous when the newest refs tie on time with different commits", async () => {
 		const [two, one] = sh("git rev-list HEAD", dir).split("\n");
 		setRef("fork/feat/x", one, 2_000);
 		setRef("origin/feat/x", two, 2_000);
 
-		expect((await getRemoteBranchTips(dir, "feat/x")).sort()).toEqual([one, two].sort());
+		const res = await getRemoteBranchTips(dir, "feat/x");
+		expect(res.ambiguous).toBe(true);
+		expect(res.tips.sort()).toEqual([one, two].sort());
+	});
+
+	it("is one tip when the tied newest refs hold the same commit", async () => {
+		const [two, one] = sh("git rev-list HEAD", dir).split("\n");
+		setRef("fork/feat/x", one, 1_000);
+		setRef("fork2/feat/x", two, 2_000);
+		setRef("origin/feat/x", two, 2_000);
+
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual({ tips: [two], ambiguous: false });
+	});
+
+	it("is ambiguous with no reflog times and different commits, and one tip when they agree", async () => {
+		const [two, one] = sh("git rev-list HEAD", dir).split("\n");
+		sh("git config core.logAllRefUpdates false", dir);
+		setRef("fork/feat/x", one, 1_000);
+		setRef("origin/feat/x", two, 1_000);
+		expect((await getRemoteBranchTips(dir, "feat/x")).ambiguous).toBe(true);
+
+		setRef("fork/feat/x", two, 1_000);
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual({ tips: [two], ambiguous: false });
 	});
 
 	it("returns a single ref as is", async () => {
 		const [two] = sh("git rev-list HEAD", dir).split("\n");
 		setRef("origin/feat/x", two, 2_000);
 
-		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([two]);
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual({ tips: [two], ambiguous: false });
 	});
 
 	it("ignores a deeper path that only ends the same way", async () => {
 		const [two] = sh("git rev-list HEAD", dir).split("\n");
 		setRef("a/b/feat/x", two, 2_000);
 
-		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([]);
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual({ tips: [], ambiguous: false });
 	});
 
 	it("is empty when the branch was never pushed", async () => {
-		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([]);
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual({ tips: [], ambiguous: false });
 	});
 });
 

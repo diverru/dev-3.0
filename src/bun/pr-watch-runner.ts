@@ -79,8 +79,9 @@ async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatc
 	if (watches.length === 0 || !worktree || isTerminal(task)) return;
 
 	const branch = await git.getCurrentBranch(worktree);
+	const remote = branch ? await git.getRemoteBranchTips(worktree, branch) : { tips: [], ambiguous: false };
 	const outcome = await evaluatePrWatches(watches, sample, {
-		tips: branch ? await git.getRemoteBranchTips(worktree, branch) : [],
+		...remote,
 		hasCommit: (sha) => git.commitExists(worktree, sha),
 		isAncestor: (ancestor, descendant) => git.isRefMergedInto(worktree, ancestor, descendant),
 	});

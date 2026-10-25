@@ -34,7 +34,7 @@ beforeEach(() => {
 	vi.mocked(data.loadTasks).mockImplementation(async () => [task]);
 	vi.mocked(git.getCurrentBranch).mockResolvedValue("feat/x");
 	vi.mocked(git.getHeadSha).mockResolvedValue(HEAD);
-	vi.mocked(git.getRemoteBranchTips).mockResolvedValue([]);
+	vi.mocked(git.getRemoteBranchTips).mockResolvedValue({ tips: [], ambiguous: false });
 	vi.mocked(github.findOpenPullRequest).mockResolvedValue({ pr: { number: 7, url: "https://github.com/a/b/pull/7", title: null, author: null }, isGitHub: true });
 });
 
@@ -48,7 +48,7 @@ describe("pr.watch.add", () => {
 	});
 
 	it("records the branch's authoritative remote tip at subscribe time", async () => {
-		vi.mocked(git.getRemoteBranchTips).mockResolvedValue(["9".repeat(40)]);
+		vi.mocked(git.getRemoteBranchTips).mockResolvedValue({ tips: ["9".repeat(40)], ambiguous: false });
 		await add();
 		expect(git.getRemoteBranchTips).toHaveBeenCalledWith("/wt", "feat/x");
 		expect(vi.mocked(addPrWatch).mock.calls[0][2]).toMatchObject({ tipsAtSubscribe: ["9".repeat(40)] });

@@ -229,6 +229,7 @@ vi.mock("@git-diff-view/react", async () => {
 			initSyntax() {}
 			buildSplitDiffLines() {}
 			buildUnifiedDiffLines() {}
+			onAllExpand() {}
 
 		__lineIndexBySide(lineNumber: number, side: number): number {
 			const sideName = side === 0 ? "old" : "new";
@@ -1121,6 +1122,76 @@ describe("TaskDiffViewer", () => {
 			// Past the last hit the cursor wraps to the top instead of walking a second copy of the file.
 			await waitFor(() => expect(screen.getByText("1 / 5")).toBeInTheDocument());
 			await waitFor(() => expect(currentRow()).toBe("new:3"));
+		});
+
+		it("lists a change block row by row in split view and removed-then-added in unified", () => {
+			const file = wholeFilePayload(
+				rows(8, { 4: "row 4 needle old", 5: "", 6: "row 6 needle old" }),
+				rows(8, { 4: "row 4 needle new", 5: "row 5 needle new" }),
+			).files[0];
+			const view = (mode: "unified" | "split") => collectDiffSearchCandidates(file, mode)
+				.filter((candidate) => candidate.text.includes("needle"))
+				.map((candidate) => `${candidate.change}${candidate.lineNumber}`);
+
+			expect(view("unified")).toEqual(["-4", "-6", "+4", "+5"]);
+			// Row 2 pairs the blank old line with the new line 5, so line 6 is the leftover.
+			expect(view("split")).toEqual(["-4", "+4", "+5", "-6"]);
+		});
+
+		it("steps old N, new N, old N+1, new N+1 in split view", async () => {
+			const user = userEvent.setup();
+			vi.mocked(api.request.getTaskDiff).mockResolvedValue(wholeFilePayload(
+				rows(30, { 10: "row 10 needle old", 11: "row 11 needle old" }),
+				rows(30, { 10: "row 10 needle new", 11: "row 11 needle new" }),
+			));
+			render(
+				<I18nProvider>
+					<TaskDiffViewer
+						task={task}
+						project={project}
+						request={{ mode: "branch", compareRef: "origin/main", compareLabel: "origin/main" }}
+						onBack={vi.fn()}
+					/>
+				</I18nProvider>,
+			);
+			await screen.findAllByTestId("mock-diff");
+			await user.click(screen.getByRole("button", { name: "Split" }));
+			await user.keyboard("{Meta>}f{/Meta}");
+			await user.type(screen.getByPlaceholderText("Search diff..."), "needle");
+
+			const visited: Array<string | null> = [];
+			for (let step = 1; step <= 4; step += 1) {
+				await waitFor(() => expect(screen.getByText(`${step} / 4`)).toBeInTheDocument());
+				await waitFor(() => expect(currentRow()).not.toBeNull());
+				visited.push(currentRow());
+				await user.click(screen.getByRole("button", { name: "Next match" }));
+			}
+			expect(visited).toEqual(["old:10", "new:10", "old:11", "new:11"]);
+		});
+
+		it("centres a hit on a long line by scrolling the diff box sideways", async () => {
+			const box = (left: number, right: number, top: number, bottom: number) => (
+				{ left, right, top, bottom, width: right - left, height: bottom - top, x: left, y: top, toJSON: () => ({}) } as DOMRect
+			);
+			const elementRects = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+				if (this.dataset.testid === "inline-diff-scroll-region") return box(0, 900, 100, 700);
+				if (this.dataset.testid === "inline-diff-toolbar") return box(0, 900, 100, 140);
+				if (this.classList.contains("diff-table-scroll-container")) return box(100, 700, 100, 700);
+				if (this.className.includes("-num")) return box(100, 140, 300, 316);
+				return box(0, 0, 0, 0);
+			});
+			const rangeRect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockReturnValue(box(900, 960, 300, 316));
+
+			try {
+				await searchFor("needle", wholeFilePayload(rows(30, { 10: "row 10 needle" }), rows(30, { 10: "row 10 needle", 1: "row 1 edited" })));
+
+				// The word centre (930) sits 510px right of the visible span's centre (420), and it is already in view vertically.
+				await waitFor(() => expect(screen.getByTestId("mock-diff-scroll").scrollLeft).toBe(510));
+				expect(scrollIntoViewMock).not.toHaveBeenCalledWith(expect.objectContaining({ block: "center" }));
+			} finally {
+				elementRects.mockRestore();
+				rangeRect.mockRestore();
+			}
 		});
 
 		it("selects the row of the hit's own side and line, not any row whose text contains the number", async () => {

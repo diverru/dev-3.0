@@ -62,6 +62,11 @@ export function collectFindRanges(root: HTMLElement | null, query: string): Rang
 	return ranges;
 }
 
+/** Lowercases per code point, so every folded unit maps back to one original character. */
+function foldCase(text: string): string {
+	return Array.from(text, (char) => char.toLocaleLowerCase()).join("");
+}
+
 /**
  * Like collectFindRanges, but matches across text nodes: syntax highlighting
  * splits a code line into many spans, so a query with a space or punctuation
@@ -73,7 +78,7 @@ export function collectJoinedFindRanges(
 	skipSelector: string,
 	limit = MAX_FIND_MATCHES,
 ): Range[] {
-	const needle = query.trim().toLocaleLowerCase();
+	const needle = foldCase(query.trim());
 	if (!root || !needle) return [];
 
 	const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -85,23 +90,32 @@ export function collectJoinedFindRanges(
 			return NodeFilter.FILTER_ACCEPT;
 		},
 	});
-	const nodes: Array<{ node: Node; start: number }> = [];
+	// Folding can change the length ("İ" becomes two units), so each folded unit
+	// remembers the node and the original offsets it came from.
+	const unitNode: Node[] = [];
+	const unitStart: number[] = [];
+	const unitEnd: number[] = [];
 	let joined = "";
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-		nodes.push({ node, start: joined.length });
-		joined += (node.nodeValue ?? "").toLocaleLowerCase();
+		let offset = 0;
+		for (const char of node.nodeValue ?? "") {
+			const folded = char.toLocaleLowerCase();
+			for (let i = 0; i < folded.length; i += 1) {
+				unitNode.push(node);
+				unitStart.push(offset);
+				unitEnd.push(offset + char.length);
+			}
+			joined += folded;
+			offset += char.length;
+		}
 	}
 
 	const ranges: Range[] = [];
-	let first = 0;
 	for (let at = joined.indexOf(needle); at >= 0 && ranges.length < limit; at = joined.indexOf(needle, at + needle.length)) {
-		const end = at + needle.length;
-		while (first + 1 < nodes.length && nodes[first + 1].start <= at) first += 1;
-		let last = first;
-		while (last + 1 < nodes.length && nodes[last + 1].start < end) last += 1;
+		const last = at + needle.length - 1;
 		const range = root.ownerDocument.createRange();
-		range.setStart(nodes[first].node, at - nodes[first].start);
-		range.setEnd(nodes[last].node, end - nodes[last].start);
+		range.setStart(unitNode[at], unitStart[at]);
+		range.setEnd(unitNode[last], unitEnd[last]);
 		ranges.push(range);
 	}
 	return ranges;

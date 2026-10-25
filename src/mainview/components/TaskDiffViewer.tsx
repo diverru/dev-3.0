@@ -136,6 +136,7 @@ type DiffInstance = {
 	initSyntax: () => void;
 	buildSplitDiffLines: () => void;
 	buildUnifiedDiffLines: () => void;
+	onAllExpand: (mode: "split" | "unified") => void;
 };
 
 type DiffLibrary = {
@@ -219,6 +220,8 @@ interface DiffSearchMatch {
 	lineNumber: number | null;
 	side: InlineCommentSideKey | null;
 	change: DiffSearchLineChange | null;
+	/** Position in the file's candidate list for the view mode (-1 for a path hit); old and new line numbers are not comparable. */
+	candidateIndex: number;
 }
 
 /** The current content hit, handed to its file section so it can expand collapsed context. */
@@ -375,42 +378,45 @@ function getReviewCommentPreview(value: string, maxLength = 100): string {
 	return `${normalized.slice(0, maxLength)}...`;
 }
 
-/** Above this edit distance the line diff is skipped: it costs seconds on a rewritten file. */
+/**
+ * Above this edit distance the line diff is skipped: it costs seconds on a rewritten file.
+ * The fallback then lists every line on both sides, so unchanged lines count twice (accepted).
+ */
 export const DIFF_SEARCH_MAX_EDIT_LENGTH = 2000;
 
-const diffSearchCandidatesCache = new WeakMap<TaskDiffFile, DiffSearchLineCandidate[]>();
+interface DiffSearchCacheEntry {
+	/** Unified order, blank lines kept: split row pairing counts them. */
+	lines: DiffSearchLineCandidate[];
+	byMode: Partial<Record<DiffViewMode, DiffSearchLineCandidate[]>>;
+}
 
-/** Every line of the file in on-screen order: a removed line before its added one, context once. */
-export function collectDiffSearchCandidates(file: TaskDiffFile): DiffSearchLineCandidate[] {
-	const cached = diffSearchCandidatesCache.get(file);
-	if (cached) {
-		return cached;
-	}
-	const candidates: DiffSearchLineCandidate[] = [];
+const diffSearchCache = new WeakMap<TaskDiffFile, DiffSearchCacheEntry>();
 
-	const addCandidate = (change: DiffSearchLineChange, lineNumber: number | null, text: string) => {
-		const trimmedText = text.trim();
-		if (!trimmedText) {
-			return;
-		}
-		candidates.push({
+function collectDiffSearchLines(file: TaskDiffFile): DiffSearchLineCandidate[] {
+	const lines: DiffSearchLineCandidate[] = [];
+
+	const addLine = (change: DiffSearchLineChange, lineNumber: number | null, text: string) => {
+		lines.push({
 			side: change === "-" ? "oldFile" : "newFile",
 			lineNumber,
-			text: trimmedText,
+			text: text.trim(),
 			change,
 		});
 	};
+	// Keeps a change block from merging with the next hunk's one.
+	const addHunkBreak = () => addLine(" ", null, "");
 
 	for (const hunk of file.hunks ?? []) {
 		for (const line of parseDiffHunkLines(hunk)) {
-			addCandidate(line.kind, line.kind === "-" ? line.oldLine : line.newLine, line.content);
+			addLine(line.kind, line.kind === "-" ? line.oldLine : line.newLine, line.content);
 		}
+		addHunkBreak();
 	}
 
 	// The backend ships hunks: null, so the whole file is diffed here with enough
 	// context to keep collapsed lines searchable too. Identical content has no hunks
 	// and the viewer renders nothing for it, so it yields no content hits.
-	if (candidates.length === 0) {
+	if (!lines.some((line) => line.text)) {
 		const context = Math.max(file.oldContent.split("\n").length, file.newContent.split("\n").length);
 		const patch = structuredPatch("a", "b", file.oldContent, file.newContent, undefined, undefined, {
 			context,
@@ -418,8 +424,8 @@ export function collectDiffSearchCandidates(file: TaskDiffFile): DiffSearchLineC
 		});
 		if (!patch) {
 			// A near-total rewrite reads as every old line removed, then every new line added.
-			file.oldContent.split("\n").forEach((line, index) => addCandidate("-", index + 1, line));
-			file.newContent.split("\n").forEach((line, index) => addCandidate("+", index + 1, line));
+			file.oldContent.split("\n").forEach((line, index) => addLine("-", index + 1, line));
+			file.newContent.split("\n").forEach((line, index) => addLine("+", index + 1, line));
 		}
 		for (const hunk of patch?.hunks ?? []) {
 			let oldLine = hunk.oldStart;
@@ -427,22 +433,57 @@ export function collectDiffSearchCandidates(file: TaskDiffFile): DiffSearchLineC
 			for (const line of hunk.lines) {
 				const change = line[0];
 				if (change === "-") {
-					addCandidate("-", oldLine++, line.slice(1));
+					addLine("-", oldLine++, line.slice(1));
 				} else if (change === "+") {
-					addCandidate("+", newLine++, line.slice(1));
+					addLine("+", newLine++, line.slice(1));
 				} else if (change === " ") {
-					addCandidate(" ", newLine++, line.slice(1));
+					addLine(" ", newLine++, line.slice(1));
 					oldLine++;
 				}
 			}
+			addHunkBreak();
 		}
 	}
-
-	diffSearchCandidatesCache.set(file, candidates);
-	return candidates;
+	return lines;
 }
 
-function buildDiffSearchMatches(files: TaskDiffFile[], query: string): DiffSearchMatch[] {
+/** Split view pairs the removed and added lines of a change block row by row: old 1, new 1, old 2, new 2, then the longer side's rest. */
+function interleaveChangeBlocks(lines: DiffSearchLineCandidate[]): DiffSearchLineCandidate[] {
+	const ordered: DiffSearchLineCandidate[] = [];
+	for (let i = 0; i < lines.length; ) {
+		if (lines[i].change === " ") {
+			ordered.push(lines[i++]);
+			continue;
+		}
+		const removed: DiffSearchLineCandidate[] = [];
+		const added: DiffSearchLineCandidate[] = [];
+		for (; i < lines.length && lines[i].change !== " "; i++) {
+			(lines[i].change === "-" ? removed : added).push(lines[i]);
+		}
+		for (let row = 0; row < Math.max(removed.length, added.length); row++) {
+			if (removed[row]) ordered.push(removed[row]);
+			if (added[row]) ordered.push(added[row]);
+		}
+	}
+	return ordered;
+}
+
+/** Every non-blank line of the file in on-screen order for the view mode; context appears once. */
+export function collectDiffSearchCandidates(file: TaskDiffFile, viewMode: DiffViewMode = "unified"): DiffSearchLineCandidate[] {
+	let entry = diffSearchCache.get(file);
+	if (!entry) {
+		entry = { lines: collectDiffSearchLines(file), byMode: {} };
+		diffSearchCache.set(file, entry);
+	}
+	const cached = entry.byMode[viewMode];
+	if (cached) {
+		return cached;
+	}
+	const lines = viewMode === "split" ? interleaveChangeBlocks(entry.lines) : entry.lines;
+	return (entry.byMode[viewMode] = lines.filter((line) => line.text));
+}
+
+function buildDiffSearchMatches(files: TaskDiffFile[], query: string, viewMode: DiffViewMode): DiffSearchMatch[] {
 	const needle = query.trim().toLocaleLowerCase();
 	if (!needle) {
 		return [];
@@ -461,12 +502,13 @@ function buildDiffSearchMatches(files: TaskDiffFile[], query: string): DiffSearc
 				lineNumber: null,
 				side: null,
 				change: null,
+				candidateIndex: -1,
 			});
 		}
 
-		for (const candidate of collectDiffSearchCandidates(file)) {
+		collectDiffSearchCandidates(file, viewMode).forEach((candidate, candidateIndex) => {
 			if (!candidate.text.toLocaleLowerCase().includes(needle)) {
-				continue;
+				return;
 			}
 			matches.push({
 				id: `${file.id}:${candidate.side}:${candidate.lineNumber ?? "?"}:${candidate.text}`,
@@ -477,8 +519,9 @@ function buildDiffSearchMatches(files: TaskDiffFile[], query: string): DiffSearc
 				lineNumber: candidate.lineNumber,
 				side: candidate.side,
 				change: candidate.change,
+				candidateIndex,
 			});
-		}
+		});
 	}
 
 	return matches;
@@ -1550,7 +1593,7 @@ function TaskDiffFileSection({
 		if (isLineRenderedInDiff(instance, viewMode, diffLib.SplitSide, reveal.side, reveal.line)) {
 			return;
 		}
-		(instance as { onAllExpand?: (mode: "split" | "unified") => void }).onAllExpand?.(viewMode);
+		instance.onAllExpand(viewMode);
 	}, [diffLib, viewMode]);
 	useEffect(() => {
 		revealSearchHit();
@@ -2194,8 +2237,8 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 		threadFocusPendingRef.current = !!currentRequest.focusFirstUnresolvedThread;
 	}, [currentRequest]);
 	const searchMatches = useMemo(
-		() => (payload ? buildDiffSearchMatches(orderedVisibleFiles, searchQuery) : []),
-		[payload, searchQuery, orderedVisibleFiles],
+		() => (payload ? buildDiffSearchMatches(orderedVisibleFiles, searchQuery, viewMode ?? "unified") : []),
+		[payload, searchQuery, orderedVisibleFiles, viewMode],
 	);
 	// Keyed by id, not index: a new query yields a new list, and a stale index would point at a foreign hit.
 	const activeSearchIndex = searchMatches.findIndex((match) => match.id === activeSearchId);
@@ -2763,9 +2806,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 		const fileIndex = new Map(orderedVisibleFiles.map((file, index) => [file.id, index]));
 		const previousFile = fileIndex.get(previous.fileId);
 		const next = previousFile === undefined ? -1 : searchMatches.findIndex((match) => (
-			(fileIndex.get(match.fileId) ?? -1) - previousFile
-			|| (match.lineNumber ?? -1) - (previous.lineNumber ?? -1)
-			|| Number(match.side === "newFile") - Number(previous.side === "newFile")
+			(fileIndex.get(match.fileId) ?? -1) - previousFile || match.candidateIndex - previous.candidateIndex
 		) >= 0);
 		activateSearchMatch(Math.max(next, 0));
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2778,7 +2819,7 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 			return;
 		}
 
-		const decorate = () => {
+		const paint = () => {
 			clearDiffSearchDecorations(root);
 			const currentElement = currentSearchMatch ? findSearchMatchElement(currentSearchMatch) : null;
 			const currentCell = currentElement
@@ -2808,6 +2849,14 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 				}
 			}
 			paintFindRanges(ranges, activeIndex, DIFF_FIND_HIGHLIGHTS);
+		};
+		// A bad range must never reach the error boundary and take the window down.
+		const decorate = () => {
+			try {
+				paint();
+			} catch (error) {
+				console.warn("[diff-search] highlight failed", error);
+			}
 		};
 
 		decorate();
@@ -2993,11 +3042,17 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 			const gutterRight = row.querySelector(".diff-line-num, .diff-line-old-num, .diff-line-new-num")?.getBoundingClientRect().right ?? 0;
 			const left = Math.max(boxRect.left, gutterRight);
 			const top = regionRect.top + (toolbarRef.current?.getBoundingClientRect().height ?? 0);
-			if (rect.top >= top && rect.bottom <= regionRect.bottom && rect.left >= left && rect.right <= boxRect.right) {
-				return true;
+			if (rect.top < top || rect.bottom > regionRect.bottom) {
+				target.scrollIntoView({ behavior: "smooth", block: "center" });
+				scrollAnchorRef.current?.reanchor();
 			}
+			// Instant and measured from the word: a long token would never be centred by scrolling its span.
+			if (rect.left < left || rect.right > boxRect.right) {
+				box.scrollLeft += (rect.left + rect.right) / 2 - (left + boxRect.right) / 2;
+			}
+			return true;
 		}
-		target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+		target.scrollIntoView({ behavior: "smooth", block: "center" });
 		scrollAnchorRef.current?.reanchor();
 		return true;
 	}

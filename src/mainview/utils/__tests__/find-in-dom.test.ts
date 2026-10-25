@@ -43,4 +43,20 @@ describe("collectJoinedFindRanges", () => {
 
 		expect(collectJoinedFindRanges(cell, "a", "[data-operator]", 2)).toHaveLength(2);
 	});
+
+	it("keeps ranges on the original text when lowercasing changes its length", () => {
+		const cell = cellOf('<span>const city = "İstanbul";</span>');
+
+		const ranges = collectJoinedFindRanges(cell, 'bul"', "[data-operator]");
+
+		expect(ranges).toHaveLength(1);
+		expect(ranges[0].toString()).toBe('bul"');
+	});
+
+	it("matches across spans after a length-changing character", () => {
+		const cell = cellOf("<span>İ</span><span>stanbul</span>");
+
+		expect(collectJoinedFindRanges(cell, "stan", "[data-operator]")[0].toString()).toBe("stan");
+		expect(collectJoinedFindRanges(cell, "i̇s", "[data-operator]")[0].toString()).toBe("İs");
+	});
 });

@@ -36,6 +36,7 @@ export const CLI_EXIT_CODE_SPACE_REF_INVALID = 34;
 export const CLI_EXIT_CODE_HIBERNATE_NOTHING_TO_FREE = 35;
 export const CLI_EXIT_CODE_HIBERNATE_DECLINED = 36;
 export const CLI_EXIT_CODE_TASK_NOT_HIBERNATED = 37;
+export const CLI_EXIT_CODE_PR_WATCH_NO_PR = 38;
 
 export const CLI_EXIT_CODE_DEFINITIONS = [
 	{
@@ -260,5 +261,11 @@ export const CLI_EXIT_CODE_DEFINITIONS = [
 		code: CLI_EXIT_CODE_TASK_NOT_HIBERNATED,
 		description:
 			"`dev3 task wake` was aimed at a task that is not hibernated, so NOTHING was launched or changed. A live task needs no wake; a task whose terminal died without being hibernated is resumed with `dev3 agent resume`. Distinct from exit 1 so a coordinator waking several tasks can treat an already-awake one as done.",
+	},
+	{
+		constant: "CLI_EXIT_CODE_PR_WATCH_NO_PR",
+		code: CLI_EXIT_CODE_PR_WATCH_NO_PR,
+		description:
+			"`dev3 pr watch` found no pull request to watch, so NOTHING was subscribed: the task's branch has no open PR (or GitHub did not answer in time), or `--pr <N>` is not that open PR. Watching follows the open PR of the task's own branch only; a review target is not supported. Open the PR first (`dev3 pr create`), then run it again. Distinct from exit 1 so an agent that opened a PR a moment ago can retry once GitHub lists it instead of treating this as a failed command.",
 	},
 ] as const;

@@ -1,4 +1,4 @@
-import { collectJoinedFindRanges } from "../find-in-dom";
+import { collectJoinedFindRanges, foldCase } from "../find-in-dom";
 
 function cellOf(html: string): HTMLElement {
 	const cell = document.createElement("div");
@@ -58,5 +58,34 @@ describe("collectJoinedFindRanges", () => {
 
 		expect(collectJoinedFindRanges(cell, "stan", "[data-operator]")[0].toString()).toBe("stan");
 		expect(collectJoinedFindRanges(cell, "i̇s", "[data-operator]")[0].toString()).toBe("İs");
+	});
+
+	it("matches across a plain node and a length-changing node", () => {
+		const cell = cellOf("<span>go to </span><span>İstanbul</span><span> now</span>");
+
+		const ranges = collectJoinedFindRanges(cell, "to İst", "[data-operator]");
+
+		expect(ranges).toHaveLength(1);
+		expect(ranges[0].toString()).toBe("to İst");
+		expect(collectJoinedFindRanges(cell, "bul no", "[data-operator]")[0].toString()).toBe("bul no");
+	});
+
+	it("folds a final sigma the same way for the query and the text", () => {
+		const cell = cellOf("<span>ΟΔΟΣ</span>");
+
+		expect(foldCase("ΟΔΟΣ")).toBe("οδος");
+		expect(collectJoinedFindRanges(cell, "οδος", "[data-operator]")).toHaveLength(1);
+		expect(collectJoinedFindRanges(cell, "ΟΔΟΣ", "[data-operator]")).toHaveLength(1);
+		expect(foldCase("İ")).toBe("i̇");
+		expect(collectJoinedFindRanges(cell, "ος", "[data-operator]")[0].toString()).toBe("ΟΣ");
+	});
+
+	it("folds a final sigma across a span boundary", () => {
+		const cell = cellOf("<span>Ο</span><span>Σ</span>");
+
+		const ranges = collectJoinedFindRanges(cell, "ος", "[data-operator]");
+
+		expect(ranges).toHaveLength(1);
+		expect(ranges[0].toString()).toBe("ΟΣ");
 	});
 });

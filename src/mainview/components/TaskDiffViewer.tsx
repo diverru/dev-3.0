@@ -23,7 +23,7 @@ import { useResolvedTheme } from "../hooks/useResolvedTheme";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
 import { formatBytes } from "../utils/formatBytes";
 import { anchorScrollRegion } from "../utils/scroll-anchor";
-import { clearFindHighlights, collectJoinedFindRanges, MAX_FIND_MATCHES, paintFindRanges } from "../utils/find-in-dom";
+import { clearFindHighlights, collectJoinedFindRanges, foldCase, MAX_FIND_MATCHES, paintFindRanges } from "../utils/find-in-dom";
 import BottomSheet from "./BottomSheet";
 import { CAROUSEL_MAX_WIDTH } from "./MobileBoardCarousel";
 import { resolveAutoDiffViewMode, resolveDiffViewMode } from "./global-settings/utils";
@@ -484,7 +484,7 @@ export function collectDiffSearchCandidates(file: TaskDiffFile, viewMode: DiffVi
 }
 
 function buildDiffSearchMatches(files: TaskDiffFile[], query: string, viewMode: DiffViewMode): DiffSearchMatch[] {
-	const needle = query.trim().toLocaleLowerCase();
+	const needle = foldCase(query.trim());
 	if (!needle) {
 		return [];
 	}
@@ -492,7 +492,7 @@ function buildDiffSearchMatches(files: TaskDiffFile[], query: string, viewMode: 
 	const matches: DiffSearchMatch[] = [];
 	for (const file of files) {
 		const filePath = getReviewFilePath(file);
-		if (filePath.toLocaleLowerCase().includes(needle)) {
+		if (foldCase(filePath).includes(needle)) {
 			matches.push({
 				id: `${file.id}:path`,
 				fileId: file.id,
@@ -507,7 +507,7 @@ function buildDiffSearchMatches(files: TaskDiffFile[], query: string, viewMode: 
 		}
 
 		collectDiffSearchCandidates(file, viewMode).forEach((candidate, candidateIndex) => {
-			if (!candidate.text.toLocaleLowerCase().includes(needle)) {
+			if (!foldCase(candidate.text).includes(needle)) {
 				return;
 			}
 			matches.push({
@@ -3042,13 +3042,14 @@ function TaskDiffViewer({ task, project, request, onBack, navigationGuardRef }: 
 			const gutterRight = row.querySelector(".diff-line-num, .diff-line-old-num, .diff-line-new-num")?.getBoundingClientRect().right ?? 0;
 			const left = Math.max(boxRect.left, gutterRight);
 			const top = regionRect.top + (toolbarRef.current?.getBoundingClientRect().height ?? 0);
+			// Instant and measured from the word: a long token would never be centred by scrolling its span.
+			// It goes first so the smooth vertical scroll below cannot override it.
+			if (rect.left < left || rect.right > boxRect.right) {
+				box.scrollLeft += (rect.left + rect.right) / 2 - (left + boxRect.right) / 2;
+			}
 			if (rect.top < top || rect.bottom > regionRect.bottom) {
 				target.scrollIntoView({ behavior: "smooth", block: "center" });
 				scrollAnchorRef.current?.reanchor();
-			}
-			// Instant and measured from the word: a long token would never be centred by scrolling its span.
-			if (rect.left < left || rect.right > boxRect.right) {
-				box.scrollLeft += (rect.left + rect.right) / 2 - (left + boxRect.right) / 2;
 			}
 			return true;
 		}

@@ -62,9 +62,13 @@ export function collectFindRanges(root: HTMLElement | null, query: string): Rang
 	return ranges;
 }
 
-/** Lowercases per code point, so every folded unit maps back to one original character. */
-function foldCase(text: string): string {
-	return Array.from(text, (char) => char.toLocaleLowerCase()).join("");
+/**
+ * Lowercases a string for matching. Per code point when the whole-string result changes
+ * the length ("İ" becomes two units), so folded units still map back to original characters.
+ */
+export function foldCase(text: string): string {
+	const lower = text.toLocaleLowerCase();
+	return lower.length === text.length ? lower : Array.from(text, (char) => char.toLocaleLowerCase()).join("");
 }
 
 /**
@@ -90,32 +94,42 @@ export function collectJoinedFindRanges(
 			return NodeFilter.FILTER_ACCEPT;
 		},
 	});
-	// Folding can change the length ("İ" becomes two units), so each folded unit
-	// remembers the node and the original offsets it came from.
-	const unitNode: Node[] = [];
-	const unitStart: number[] = [];
-	const unitEnd: number[] = [];
-	let joined = "";
+	// Folding the joined text once keeps context-sensitive cases (final sigma) right across spans.
+	const nodes: Array<{ node: Node; start: number }> = [];
+	let text = "";
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+		nodes.push({ node, start: text.length });
+		text += node.nodeValue ?? "";
+	}
+	const joined = foldCase(text);
+	// When folding changes the length, each folded unit remembers the original offsets it came from.
+	let origStart: number[] | null = null;
+	let origEnd: number[] | null = null;
+	if (joined.length !== text.length) {
+		origStart = [];
+		origEnd = [];
 		let offset = 0;
-		for (const char of node.nodeValue ?? "") {
-			const folded = char.toLocaleLowerCase();
-			for (let i = 0; i < folded.length; i += 1) {
-				unitNode.push(node);
-				unitStart.push(offset);
-				unitEnd.push(offset + char.length);
+		for (const char of text) {
+			for (let i = char.toLocaleLowerCase().length; i > 0; i -= 1) {
+				origStart.push(offset);
+				origEnd.push(offset + char.length);
 			}
-			joined += folded;
 			offset += char.length;
 		}
 	}
 
 	const ranges: Range[] = [];
+	let first = 0;
+	let last = 0;
 	for (let at = joined.indexOf(needle); at >= 0 && ranges.length < limit; at = joined.indexOf(needle, at + needle.length)) {
-		const last = at + needle.length - 1;
+		const from = origStart ? origStart[at] : at;
+		const to = origEnd ? origEnd[at + needle.length - 1] : at + needle.length;
+		while (first + 1 < nodes.length && nodes[first + 1].start <= from) first += 1;
+		last = Math.max(last, first);
+		while (last + 1 < nodes.length && nodes[last + 1].start < to) last += 1;
 		const range = root.ownerDocument.createRange();
-		range.setStart(unitNode[at], unitStart[at]);
-		range.setEnd(unitNode[last], unitEnd[last]);
+		range.setStart(nodes[first].node, from - nodes[first].start);
+		range.setEnd(nodes[last].node, to - nodes[last].start);
 		ranges.push(range);
 	}
 	return ranges;

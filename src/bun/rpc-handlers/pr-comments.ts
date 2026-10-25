@@ -3,7 +3,7 @@ import * as data from "../data";
 import * as github from "../github";
 import { sendMessageImmediately } from "../scheduled-message-scheduler";
 import { createLogger } from "../logger";
-import { parseGitHubPullRequestUrl } from "./pr-status";
+import { parseGitHubPullRequestUrl } from "../../shared/pr-status";
 
 const log = createLogger("pr-comments");
 

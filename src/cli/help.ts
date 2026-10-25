@@ -1068,7 +1068,8 @@ const COMMANDS: CommandHelp[] = [
 				details: [
 					"--until ci       (default) One message when every check GitHub lists for the PR's current",
 					"                 head has finished, green or red; also when the PR is merged or closed first.",
-					"                 Checks GitHub has not listed yet cannot be waited for.",
+					"                 It is confirmed by a second poll a minute later; checks GitHub has not listed",
+					"                 by then cannot be waited for.",
 					"--until merged   One message when the PR is merged or closed. A red CI on the way is",
 					"                 reported once per head and the watch stays.",
 					"--pr <N>         A safety check: must be the open PR of this task's own branch. Watching",

@@ -39,11 +39,11 @@ import {
 	mapReviewDecision,
 	normalizeChecks,
 	parseAutoMergeEnabled,
-	parseGitHubPullRequestUrl,
 	parseReviewDecision,
 	reasonForSignal,
 	rollupCiStatus,
 } from "../rpc-handlers/pr-status";
+import { parseGitHubPullRequestUrl } from "../../shared/pr-status";
 import {
 	dispatchLifecycleEvent,
 	dispatchLifecycleFinding,

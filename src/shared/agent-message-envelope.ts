@@ -1,4 +1,5 @@
 import type { PrStatusNotice, PrWatchUntil } from "./pr-watch";
+import { parseGitHubPullRequestUrl } from "./pr-status";
 import { ID_PREFIX_MIN_LENGTH, type AgentMessageSource } from "./types";
 
 /**
@@ -96,10 +97,14 @@ export function wrapArtifactMessage(
 	].join("\n");
 }
 
-function prNoticeSentence(prNumber: number, notice: PrStatusNotice): string {
+function prNoticeSentence(prNumber: number, notice: PrStatusNotice, completionOffered: boolean): string {
 	switch (notice.kind) {
 		case "merged":
-			return `PR #${prNumber} merged. dev3 handles the completion offer; do not request task completion yourself.`;
+			return completionOffered
+				? `PR #${prNumber} merged. dev3 handles the completion offer; do not request task completion yourself.`
+				: `PR #${prNumber} merged. dev3 does not offer completion for this task; continue per your task rules.`;
+		case "replaced":
+			return `PR #${notice.oldNumber} is no longer this branch's open PR (now #${notice.newNumber}); watch ended. Run \`dev3 pr watch\` again to follow #${notice.newNumber}.`;
 		case "closed":
 			return `PR #${prNumber} closed without merge.`;
 		case "ci-passed":
@@ -115,11 +120,20 @@ const PR_NOTICE_SUBJECT: Record<PrStatusNotice["kind"], string> = {
 	"ci-failed": "CI failed",
 	merged: "merged",
 	closed: "closed without merge",
+	replaced: "watch ended",
 };
+
+/** Only the exact `https://<host>/<owner>/<repo>/pull/<N>` shape of this PR goes into the message. */
+function isPlainPullRequestUrl(url: string, prNumber: number): boolean {
+	const repo = parseGitHubPullRequestUrl(url);
+	return repo !== null && url === `https://${repo.host}/${repo.owner}/${repo.repo}/pull/${prNumber}`;
+}
 
 /** The agent-traffic-log subject for a PR status message. */
 export function prStatusSubject(prNumber: number, notices: readonly PrStatusNotice[]): string {
-	return `PR #${prNumber}: ${notices[0] ? PR_NOTICE_SUBJECT[notices[0].kind] : "status"}`;
+	const first = notices[0];
+	if (first?.kind === "replaced") return `PR #${first.oldNumber}: ${PR_NOTICE_SUBJECT.replaced}`;
+	return `PR #${prNumber}: ${first ? PR_NOTICE_SUBJECT[first.kind] : "status"}`;
 }
 
 /**
@@ -137,10 +151,12 @@ export function wrapPrStatusMessage(input: {
 	notices: readonly PrStatusNotice[];
 	/** Kinds of watch that remain on the task after this message. */
 	remaining: readonly PrWatchUntil[];
+	/** False when the merge path only posts a notice (manual completion, or the offer switched off). */
+	completionOffered: boolean;
 }): string {
-	const sentences = [...new Set(input.notices.map((notice) => prNoticeSentence(input.prNumber, notice)))];
+	const sentences = [...new Set(input.notices.map((notice) => prNoticeSentence(input.prNumber, notice, input.completionOffered)))];
 	const lines = ["<dev3-pr-status>", ...sentences];
-	if (/^https:\/\/\S+$/.test(input.url)) lines.push(input.url);
+	if (isPlainPullRequestUrl(input.url, input.prNumber)) lines.push(input.url);
 	lines.push(
 		`${input.remaining.length > 0 ? `Watch until ${input.remaining.join(" and ")} stays active.` : "No watch is left."} Act per your task rules.`,
 		"</dev3-pr-status>",

@@ -1,5 +1,20 @@
 import type { PRMergeState } from "./types";
 
+/** Extract host/owner/repo from a GitHub pull-request URL; null when it isn't one. */
+export function parseGitHubPullRequestUrl(url: string): { host: string; owner: string; repo: string } | null {
+	try {
+		const parsed = new URL(url);
+		const parts = parsed.pathname.split("/").filter(Boolean);
+		const pullIndex = parts.indexOf("pull");
+		if (pullIndex < 2) return null;
+		const owner = parts[pullIndex - 2];
+		const repo = parts[pullIndex - 1]?.replace(/\.git$/, "");
+		return owner && repo && parsed.hostname ? { host: parsed.hostname, owner, repo } : null;
+	} catch {
+		return null;
+	}
+}
+
 /** Common mergeability outcomes used by the PR status popover. */
 export type PRMergeability = "mergeable" | "not_mergeable" | "unknown";
 export type PRMergeabilityReason = "conflict" | "blocked" | "behind" | "draft" | "unstable" | "hooks";

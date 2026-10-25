@@ -11,11 +11,13 @@ vi.mock("../data", () => ({ getTask: vi.fn(), updateTaskWith: vi.fn() }));
 vi.mock("../git", () => ({ isRefMergedInto: vi.fn(), getRemoteBranchTips: vi.fn(), getCurrentBranch: vi.fn() }));
 vi.mock("../scheduled-message-author", () => ({ resolveScheduledMessageAuthorPane: vi.fn(), liveAgentPaneIds: vi.fn() }));
 vi.mock("../scheduled-message-scheduler", () => ({ sendMessageImmediately: vi.fn() }));
+vi.mock("../settings", () => ({ loadSettings: vi.fn() }));
 
 import * as data from "../data";
 import * as git from "../git";
 import { liveAgentPaneIds, resolveScheduledMessageAuthorPane } from "../scheduled-message-author";
 import { sendMessageImmediately } from "../scheduled-message-scheduler";
+import { loadSettings } from "../settings";
 import { PR_WATCH_RETRY_BACKOFF_MS, _resetPrWatchRunnerState, addPrWatch, clearPrWatches, runPrWatches } from "../pr-watch-runner";
 
 const HEAD = "2222222222222222222222222222222222222222";
@@ -23,7 +25,8 @@ const URL = "https://github.com/acme/app/pull/7";
 const project = { id: "p1" } as Project;
 
 function watch(until: PrWatch["until"], overrides: Partial<PrWatch> = {}): PrWatch {
-	return { id: `w-${until}`, until, prNumber: 7, headSha: HEAD, createdAt: "2026-10-22T10:00:00.000Z", ...overrides };
+	// Already seen finished once on HEAD (one check), so the next finished sample confirms it.
+	return { id: `w-${until}`, until, prNumber: 7, headSha: HEAD, createdAt: "2026-10-22T10:00:00.000Z", ciSeen: { head: HEAD, total: 1 }, ...overrides };
 }
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -64,6 +67,7 @@ beforeEach(() => {
 	vi.mocked(git.getCurrentBranch).mockResolvedValue("feat/x");
 	vi.mocked(git.getRemoteBranchTips).mockResolvedValue([]);
 	vi.mocked(liveAgentPaneIds).mockResolvedValue(["%1"]);
+	vi.mocked(loadSettings).mockResolvedValue({} as Awaited<ReturnType<typeof loadSettings>>);
 	vi.mocked(sendMessageImmediately).mockResolvedValue({ status: "held", spilledPath: null });
 });
 
@@ -80,10 +84,17 @@ describe("runPrWatches", () => {
 		expect(lastStoredWatches()).toBeNull();
 	});
 
-	it("sends nothing and changes nothing while CI is pending", async () => {
+	it("sends nothing while CI is pending, and forgets the earlier finished look", async () => {
 		await runPrWatches(project, "t1", pendingSample, URL);
 		expect(sendMessageImmediately).not.toHaveBeenCalled();
-		expect(data.updateTaskWith).not.toHaveBeenCalled();
+		expect(lastStoredWatches()).toEqual([watch("ci", { ciSeen: undefined })]);
+	});
+
+	it("notes the first finished look and sends nothing until a second confirms it", async () => {
+		current = task({ prWatches: [watch("ci", { ciSeen: undefined })] });
+		await runPrWatches(project, "t1", greenSample, URL);
+		expect(sendMessageImmediately).not.toHaveBeenCalled();
+		expect(lastStoredWatches()).toEqual([watch("ci")]);
 	});
 
 	it("does nothing for a task without watches", async () => {
@@ -159,7 +170,37 @@ describe("runPrWatches", () => {
 		await runPrWatches(project, "t1", pendingSample, URL);
 
 		expect(sendMessageImmediately).not.toHaveBeenCalled();
-		expect(lastStoredWatches()).toEqual([watch("ci")]);
+		expect(lastStoredWatches()).toEqual([watch("ci", { ciSeen: undefined })]);
+	});
+
+	describe("the merged message", () => {
+		const merged = { ...greenSample, state: "MERGED" };
+		const sentText = () => vi.mocked(sendMessageImmediately).mock.calls[0][1];
+
+		it("leaves completion to dev3 when dev3 will offer it", async () => {
+			await runPrWatches(project, "t1", merged, URL);
+			expect(sentText()).toContain("dev3 handles the completion offer");
+		});
+
+		it("says no completion is offered for a task with manual completion", async () => {
+			current = task({ manualCompletion: true });
+			await runPrWatches(project, "t1", merged, URL);
+			expect(sentText()).toContain("dev3 does not offer completion for this task; continue per your task rules.");
+		});
+
+		it("says no completion is offered when the user switched the suggestion off", async () => {
+			vi.mocked(loadSettings).mockResolvedValue({ suggestCompletingTasksAfterMerge: false } as Awaited<ReturnType<typeof loadSettings>>);
+			await runPrWatches(project, "t1", merged, URL);
+			expect(sentText()).toContain("dev3 does not offer completion for this task");
+		});
+	});
+
+	it("tells the agent to watch again when an open sample carries another PR, and ends the old watch", async () => {
+		current = task({ prWatches: [watch("ci", { prNumber: 5 })] });
+		await runPrWatches(project, "t1", greenSample, URL);
+
+		expect(vi.mocked(sendMessageImmediately).mock.calls[0][1]).toContain("PR #5 is no longer this branch's open PR (now #7)");
+		expect(lastStoredWatches()).toBeNull();
 	});
 
 	it("never puts a check name in the message", async () => {

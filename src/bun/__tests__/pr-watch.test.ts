@@ -6,13 +6,16 @@ import { applyPrWatchOutcome, evaluatePrWatches, upsertPrWatch, type PrWatchGit,
 const OLD = "1111111111111111111111111111111111111111";
 const HEAD = "2222222222222222222222222222222222222222";
 const NEWER = "3333333333333333333333333333333333333333";
+const REBASED = "4444444444444444444444444444444444444444";
+const seenOn = (head: string, total = 2) => ({ head, total });
 
 const check = (name: string, status: string, conclusion: string | null): PRCheckInfo => ({ name, status, conclusion, detailsUrl: null });
 const green = [check("lint", "COMPLETED", "SUCCESS"), check("test", "COMPLETED", "SUCCESS")];
 const red = [check("lint", "COMPLETED", "FAILURE"), check("test", "COMPLETED", "SUCCESS")];
 
 function watch(until: PrWatch["until"], overrides: Partial<PrWatch> = {}): PrWatch {
-	return { id: `w-${until}`, until, prNumber: 7, headSha: HEAD, createdAt: "2026-10-22T10:00:00.000Z", ...overrides };
+	// Already seen finished once on HEAD, so the next finished sample confirms it.
+	return { id: `w-${until}`, until, prNumber: 7, headSha: HEAD, createdAt: "2026-10-22T10:00:00.000Z", ciSeen: { head: HEAD, total: 2 }, ...overrides };
 }
 
 function sample(overrides: Partial<PrWatchSample> = {}): PrWatchSample {
@@ -41,10 +44,10 @@ describe("evaluatePrWatches", () => {
 		expect(out.removeIds).toEqual(["w-ci"]);
 	});
 
-	it("keeps waiting while any check is pending, even when another already failed", async () => {
+	it("keeps waiting while any check is pending, even when another already failed, and forgets the earlier finished look", async () => {
 		const checks = [check("lint", "COMPLETED", "FAILURE"), check("test", "IN_PROGRESS", null)];
 		const out = await evaluatePrWatches([watch("ci")], sample({ checks }), fakeGit());
-		expect(out).toEqual(EMPTY);
+		expect(out).toEqual({ fired: [], removeIds: [], patches: { "w-ci": { ciSeen: undefined } } });
 	});
 
 	it("keeps waiting on a null or empty rollup", async () => {
@@ -88,7 +91,7 @@ describe("evaluatePrWatches", () => {
 		const again = await evaluatePrWatches([seen], sample({ checks: red }), fakeGit());
 		expect(notices(again)).toEqual([]);
 		const pushed = await evaluatePrWatches(
-			[{ ...seen, headSha: HEAD }],
+			[{ ...seen, headSha: HEAD, ciSeen: seenOn(NEWER) }],
 			sample({ headRefOid: NEWER, checks: red }),
 			fakeGit({ ancestors: [] }),
 		);
@@ -112,7 +115,7 @@ describe("evaluatePrWatches", () => {
 		const checks = [check("lint", "QUEUED", null)];
 		const out = await evaluatePrWatches([watch("ci", { headSha: OLD })], sample({ checks }), fakeGit());
 		expect(notices(out)).toEqual([]);
-		expect(out.patches).toEqual({ "w-ci": { headSha: HEAD } });
+		expect(out.patches).toEqual({ "w-ci": { headSha: HEAD, ciSeen: undefined } });
 	});
 
 	it("ignores a sample whose head is an older ancestor of the watch's head", async () => {
@@ -132,7 +135,7 @@ describe("evaluatePrWatches", () => {
 	});
 
 	it("treats an open sample whose head is unknown here as a moved head and judges it", async () => {
-		const out = await evaluatePrWatches([watch("ci")], sample({ headRefOid: NEWER, checks: red }), fakeGit());
+		const out = await evaluatePrWatches([watch("ci", { ciSeen: seenOn(NEWER) })], sample({ headRefOid: NEWER, checks: red }), fakeGit());
 		expect(notices(out)).toEqual([{ kind: "ci-failed", sha: NEWER, failedCount: 1, totalChecks: 2 }]);
 	});
 
@@ -147,13 +150,32 @@ describe("evaluatePrWatches", () => {
 		const late = await evaluatePrWatches([watch("ci")], sample({ headRefOid: HEAD }), git);
 		expect(late).toEqual(EMPTY);
 
-		const current = await evaluatePrWatches([watch("ci")], sample({ headRefOid: NEWER }), git);
+		const current = await evaluatePrWatches([watch("ci", { ciSeen: seenOn(NEWER) })], sample({ headRefOid: NEWER }), git);
 		expect(notices(current)).toEqual([{ kind: "ci-passed", sha: NEWER, totalChecks: 2 }]);
 	});
 
 	it("judges the head when the branch has no remote ref to be behind", async () => {
 		const out = await evaluatePrWatches([watch("ci")], sample({ headRefOid: HEAD }), fakeGit({ tips: [] }));
 		expect(notices(out)).toEqual([{ kind: "ci-passed", sha: HEAD, totalChecks: 2 }]);
+	});
+
+	it("ignores the old head after a force-push and leaves the watch on the rebased head", async () => {
+		const out = await evaluatePrWatches([watch("ci", { headSha: REBASED })], sample({ headRefOid: HEAD }), fakeGit({ tips: [REBASED] }));
+		expect(out).toEqual(EMPTY);
+	});
+
+	it("does not move a watch whose own head was never pushed (rebased locally, old head still on GitHub)", async () => {
+		const out = await evaluatePrWatches([watch("ci", { headSha: REBASED })], sample({ headRefOid: HEAD }), fakeGit({ tips: [HEAD] }));
+		expect(out).toEqual(EMPTY);
+	});
+
+	it("still follows a push someone else made on top of a known tip", async () => {
+		const git = fakeGit({ tips: [HEAD], ancestors: [[HEAD, NEWER]] });
+		const out = await evaluatePrWatches([watch("ci", { ciSeen: seenOn(NEWER) })], sample({ headRefOid: NEWER }), git);
+		expect(notices(out)).toEqual([{ kind: "ci-passed", sha: NEWER, totalChecks: 2 }]);
+
+		const moved = await evaluatePrWatches([watch("merged")], sample({ headRefOid: NEWER, checks: [check("a", "QUEUED", null)] }), git);
+		expect(moved.patches["w-merged"]).toMatchObject({ headSha: NEWER });
 	});
 
 	it("still reports a merge from a sample of an older head", async () => {
@@ -163,6 +185,53 @@ describe("evaluatePrWatches", () => {
 
 	it("ignores a sample of a different PR number", async () => {
 		const out = await evaluatePrWatches([watch("ci")], sample({ number: 8, state: "MERGED" }), fakeGit());
+		expect(out).toEqual(EMPTY);
+	});
+});
+
+describe("a finished run is confirmed by a second sample", () => {
+	const first = (until: PrWatch["until"] = "ci") => watch(until, { ciSeen: undefined });
+
+	it("notes the first finished look and fires nothing", async () => {
+		const out = await evaluatePrWatches([first()], sample(), fakeGit());
+		expect(out).toEqual({ fired: [], removeIds: [], patches: { "w-ci": { ciSeen: seenOn(HEAD) } } });
+	});
+
+	it("fires on the second finished look at the same head and total", async () => {
+		const out = await evaluatePrWatches([watch("ci", { ciSeen: seenOn(HEAD) })], sample(), fakeGit());
+		expect(notices(out)).toEqual([{ kind: "ci-passed", sha: HEAD, totalChecks: 2 }]);
+	});
+
+	it("starts over when a check joined late and the total changed", async () => {
+		const out = await evaluatePrWatches([watch("ci", { ciSeen: seenOn(HEAD, 1) })], sample(), fakeGit());
+		expect(out.fired).toEqual([]);
+		expect(out.patches["w-ci"]).toEqual({ ciSeen: seenOn(HEAD, 2) });
+	});
+
+	it("starts over when the head changed", async () => {
+		const out = await evaluatePrWatches([watch("ci", { ciSeen: seenOn(OLD) })], sample(), fakeGit());
+		expect(out.fired).toEqual([]);
+	});
+
+	it("holds an `until merged` red CI notice back until it is confirmed too", async () => {
+		const unconfirmed = await evaluatePrWatches([first("merged")], sample({ checks: red }), fakeGit());
+		expect(unconfirmed.fired).toEqual([]);
+		expect(unconfirmed.patches["w-merged"]).toEqual({ ciSeen: seenOn(HEAD) });
+
+		const confirmed = await evaluatePrWatches([watch("merged", { ciSeen: seenOn(HEAD) })], sample({ checks: red }), fakeGit());
+		expect(notices(confirmed)).toHaveLength(1);
+	});
+});
+
+describe("a watch whose PR is no longer the branch's open PR", () => {
+	it("ends with a notice naming the new PR when an open sample carries another number", async () => {
+		const out = await evaluatePrWatches([watch("ci", { prNumber: 5 }), watch("merged")], sample(), fakeGit());
+		expect(out.fired[0]).toEqual({ watch: watch("ci", { prNumber: 5 }), notice: { kind: "replaced", oldNumber: 5, newNumber: 7 } });
+		expect(out.removeIds).toEqual(["w-ci"]);
+	});
+
+	it("is left alone by a merged or closed sample of another PR", async () => {
+		const out = await evaluatePrWatches([watch("ci", { prNumber: 5 })], sample({ state: "MERGED" }), fakeGit());
 		expect(out).toEqual(EMPTY);
 	});
 });

@@ -1,8 +1,9 @@
-import type { Project, Task } from "../shared/types";
+import { taskCompletesManually, type Project, type Task } from "../shared/types";
 import type { PrWatch } from "../shared/pr-watch";
 import { prStatusSubject, wrapPrStatusMessage } from "../shared/agent-message-envelope";
 import * as data from "./data";
 import * as git from "./git";
+import { loadSettings } from "./settings";
 import { getPushMessage, log } from "./rpc-handlers/shared-pure";
 import { applyPrWatchOutcome, evaluatePrWatches, upsertPrWatch, type PrWatchOutcome, type PrWatchSample } from "./pr-watch";
 
@@ -162,7 +163,9 @@ async function deliverFired(project: Project, taskId: string, outcome: PrWatchOu
 		try {
 			// Loaded on demand: the scheduler pulls in the whole prompt-delivery stack.
 			const { sendMessageImmediately } = await import("./scheduled-message-scheduler");
-			const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining });
+			// The same test the merge path uses to choose between an offer and a bare notice.
+			const completionOffered = !taskCompletesManually(fresh) && (await loadSettings()).suggestCompletingTasksAfterMerge !== false;
+			const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining, completionOffered });
 			await sendMessageImmediately(fresh, text, { kind: "pane", paneId }, null, { subject: prStatusSubject(prNumber, notices), origin: "dev3" });
 		} catch (err) {
 			for (const key of keys) retryAfter.set(`${taskId}|${key}`, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);

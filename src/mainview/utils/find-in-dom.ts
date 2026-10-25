@@ -62,14 +62,12 @@ export function collectFindRanges(root: HTMLElement | null, query: string): Rang
 	return ranges;
 }
 
-/**
- * Lowercases a string for matching. Per code point when the whole-string result changes
- * the length ("İ" becomes two units), so folded units still map back to original characters.
- */
+/** Lowercases a string for matching; the one fold shared by every search so counts and highlights agree. */
 export function foldCase(text: string): string {
-	const lower = text.toLocaleLowerCase();
-	return lower.length === text.length ? lower : Array.from(text, (char) => char.toLocaleLowerCase()).join("");
+	return text.toLocaleLowerCase();
 }
+
+const foldPerCodePoint = (text: string): string => Array.from(text, (char) => char.toLocaleLowerCase()).join("");
 
 /**
  * Like collectFindRanges, but matches across text nodes: syntax highlighting
@@ -82,7 +80,7 @@ export function collectJoinedFindRanges(
 	skipSelector: string,
 	limit = MAX_FIND_MATCHES,
 ): Range[] {
-	const needle = foldCase(query.trim());
+	let needle = foldCase(query.trim());
 	if (!root || !needle) return [];
 
 	const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -101,8 +99,8 @@ export function collectJoinedFindRanges(
 		nodes.push({ node, start: text.length });
 		text += node.nodeValue ?? "";
 	}
-	const joined = foldCase(text);
-	// When folding changes the length, each folded unit remembers the original offsets it came from.
+	let joined = foldCase(text);
+	// A length change ("İ" is two units) needs a map from folded units back to original offsets.
 	let origStart: number[] | null = null;
 	let origEnd: number[] | null = null;
 	if (joined.length !== text.length) {
@@ -115,6 +113,11 @@ export function collectJoinedFindRanges(
 				origEnd.push(offset + char.length);
 			}
 			offset += char.length;
+		}
+		// Unreachable with real casing rules; per-code-point folding makes the map exact if it ever happens.
+		if (origStart.length !== joined.length) {
+			joined = foldPerCodePoint(text);
+			needle = foldPerCodePoint(query.trim());
 		}
 	}
 

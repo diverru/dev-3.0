@@ -88,4 +88,16 @@ describe("collectJoinedFindRanges", () => {
 		expect(ranges).toHaveLength(1);
 		expect(ranges[0].toString()).toBe("ΟΣ");
 	});
+
+	it("keeps the whole-string sigma fold when another character changes the length", () => {
+		const one = cellOf("<span>İ ΟΣ</span>");
+		const spans = cellOf("<span>İ </span><span>Ο</span><span>Σ</span>");
+
+		for (const cell of [one, spans]) {
+			const ranges = collectJoinedFindRanges(cell, "ος", "[data-operator]");
+			expect(ranges).toHaveLength(1);
+			expect(ranges[0].toString()).toBe("ΟΣ");
+		}
+		expect(foldCase("İ ΟΣ")).toBe("i̇ ος");
+	});
 });

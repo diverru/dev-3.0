@@ -770,7 +770,7 @@ describe("github", () => {
 				}] } } } })));
 				const { findOpenPullRequest } = await import("../github");
 				await expect(findOpenPullRequest(PROJECT, "/tmp/wt", "dev3/t")).resolves.toEqual({
-					pr: { number: 1475, url: "https://github.com/h0x91b/dev-3.0/pull/1475", title: "Pin tmux", author: "Arseny" }, isGitHub: true, status: expect.objectContaining({ state: "OPEN", unresolvedCount: 0 }),
+					pr: { number: 1475, url: "https://github.com/h0x91b/dev-3.0/pull/1475", title: "Pin tmux", author: "Arseny" }, isGitHub: true, status: expect.objectContaining({ state: "OPEN", unresolvedCount: 0, checkedAt: expect.any(Number) }),
 				});
 				expect(spawnMock.mock.calls.some(([cmd]) => cmd[1] === "pr")).toBe(false);
 				expect(fetch).toHaveBeenCalledWith("https://api.github.com/graphql", expect.objectContaining({

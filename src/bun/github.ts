@@ -430,7 +430,7 @@ export interface OpenPullRequestProbe {
 	pr: { number: number; url: string; title: string | null; author: string | null } | null;
 	/** False ONLY when gh definitively said this is not a GitHub repo. */
 	isGitHub: boolean;
-	status?: GitHubPullRequestSummary;
+	status?: GitHubPullRequestSummary & { checkedAt: number };
 }
 
 /**
@@ -450,7 +450,7 @@ export async function findOpenPullRequest(
 	return {
 		pr: pr?.state === "OPEN" && pr.headRefName === headBranch ? describeListedPr(pr) : null,
 		isGitHub: result?.isGitHub ?? true,
-		...(pr ? { status: pr } : {}),
+		...(pr ? { status: { ...pr, checkedAt: result!.checkedAt } } : {}),
 	};
 }
 

@@ -14,6 +14,8 @@ A read-only comparison of active boards with GitHub found an actual merged PR wh
 
 Failed reads are removed from the caches so the next poll can retry. Snapshot-only readers keep immutable MERGED state and head proof independently of the rich status TTL, using the last resolved repository identity even during a failed discovery refresh. Only NOT_FOUND errors exactly at the saved PR alias may retain partial branch results; unrelated GraphQL errors still fail. Publishing rich status cannot discard an already discovered PR, and account-wide backoff requires rate-limit headers or an explicit rate-limit message rather than any HTTP 403.
 
+After integration with PR watches, subscribed tasks retain their one-minute background cadence. `reportTaskPrStatus` passes the API sample's `checkedAt` through `runPrWatches` to CI evaluation, so a repeated cache hit cannot count as the second fresh observation required to confirm CI.
+
 ## Risks
 
 The direct GraphQL query must track GitHub schema changes; announced breaking changes have at least three months of notice. A single 15-second deadline covers auth, repository discovery, queries, and pagination. API rate-limit headers are honored; metadata-only reads preserve PR identity when CI is inaccessible, while incomplete CI becomes unknown rather than green. A historical PR never authorizes completion of follow-up work.

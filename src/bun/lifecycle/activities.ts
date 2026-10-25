@@ -425,12 +425,12 @@ async function pollTaskPrStatus(project: Project, task: Task, suggestCompletion:
 	if (!result) return null;
 	const pr = result.pr;
 	if (!pr) return { ...NO_PR, checkedAt: result.checkedAt };
-	return { ...await reportTaskPrStatus(project, task, branchName, pr, suggestCompletion), checkedAt: result.checkedAt };
+	return { ...await reportTaskPrStatus(project, task, branchName, pr, suggestCompletion, result.checkedAt), checkedAt: result.checkedAt };
 }
 
 export async function reportTaskPrStatus(
 	project: Project, task: Task, branchName: string, pr: GitHubPullRequestSummary,
-	suggestCompletion: boolean, skipUnchanged = false,
+	suggestCompletion: boolean, checkedAt: number, skipUnchanged = false,
 ): Promise<PolledPRStatus> {
 	const matchesBranch = pr.headRefName === branchName;
 	const isOpenPr = matchesBranch && pr.state === "OPEN";
@@ -516,7 +516,7 @@ export async function reportTaskPrStatus(
 	if (task.prWatches?.length) {
 		try {
 			const headRefOid = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-			await runPrWatches(project, task.id, { number: prNumber, state: mergeState.state, headRefOid, checks }, prUrl ?? "");
+			await runPrWatches(project, task.id, { number: prNumber, state: mergeState.state, headRefOid, checks }, prUrl ?? "", checkedAt);
 		} catch (err) {
 			log.warn("PR watch evaluation failed", { taskId: task.id.slice(0, 8), error: String(err) });
 		}

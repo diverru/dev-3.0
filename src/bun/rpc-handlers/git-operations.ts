@@ -276,7 +276,7 @@ async function getBranchStatusImpl(params: { taskId: string; projectId: string; 
 			if (probe.status) {
 				try {
 					const settings = await loadSettings();
-					await reportTaskPrStatus(project, task, branchForPush, probe.status, settings.suggestCompletingTasksAfterMerge !== false, true);
+					await reportTaskPrStatus(project, task, branchForPush, probe.status, settings.suggestCompletingTasksAfterMerge !== false, probe.status.checkedAt, true);
 				} catch (err) {
 					log.warn("PR status publication failed (non-fatal)", { taskId: task.id, error: String(err) });
 				}

@@ -64,17 +64,17 @@ export async function clearPrWatches(project: Project, taskId: string): Promise<
  * message was accepted: an agent that cannot be reached keeps its watch and hears
  * about it on a later poll.
  */
-export async function runPrWatches(project: Project, taskId: string, sample: PrWatchSample, prUrl: string): Promise<void> {
+export async function runPrWatches(project: Project, taskId: string, sample: PrWatchSample, prUrl: string, checkedAt: number): Promise<void> {
 	if (inFlight.has(taskId)) return;
 	inFlight.add(taskId);
 	try {
-		await runPrWatchesOnce(project, taskId, sample, prUrl);
+		await runPrWatchesOnce(project, taskId, sample, prUrl, checkedAt);
 	} finally {
 		inFlight.delete(taskId);
 	}
 }
 
-async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatchSample, prUrl: string): Promise<void> {
+async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatchSample, prUrl: string, checkedAt: number): Promise<void> {
 	// Fresh read: the poll's task snapshot may predate a `--off` or a new subscription.
 	const task = await data.getTask(project, taskId);
 	const watches = task.prWatches ?? [];
@@ -88,11 +88,12 @@ async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatc
 		ambiguousWarned.add(taskId);
 		log.warn("PR watch defers CI notices: same-named remote refs of the branch disagree", { taskId: taskId.slice(0, 8) });
 	}
+	// Cache hits retain their API timestamp and cannot count as a second CI observation.
 	const outcome = await evaluatePrWatches(watches, sample, {
 		...remote,
 		hasCommit: (sha) => git.commitExists(worktree, sha),
 		isAncestor: (ancestor, descendant) => git.isRefMergedInto(worktree, ancestor, descendant),
-	});
+	}, checkedAt);
 	const firedIds = new Set(outcome.fired.map(({ watch }) => watch.id));
 	const quietPatches = Object.fromEntries(Object.entries(outcome.patches).filter(([id]) => !firedIds.has(id)));
 	if (Object.keys(quietPatches).length > 0) {

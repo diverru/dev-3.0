@@ -6362,7 +6362,7 @@ describe("handlers.getBranchStatus", () => {
 
 	it("publishes fresh rich PR status from the branch poll without waiting for a second timer", async () => {
 		const project = makeProject();
-		const task = makeTask({ status: "in-progress", worktreePath: "/tmp/wt", branchName: "feat/login", prNumber: 42, prUrl: "https://github.com/test/repo/pull/42" });
+		const task = makeTask({ status: "in-progress", worktreePath: "/tmp/wt", branchName: "feat/login", prNumber: 42, prUrl: "https://github.com/test/repo/pull/42", prWatches: [{ id: "watch", until: "ci", prNumber: 42, headSha: "sha", createdAt: "2026-10-26T00:00:00.000Z" }] });
 		vi.mocked(data.getProject).mockResolvedValue(project);
 		vi.mocked(data.getTask).mockResolvedValue(task);
 		vi.mocked(data.loadTasks).mockResolvedValue([task]);
@@ -6372,14 +6372,16 @@ describe("handlers.getBranchStatus", () => {
 		vi.mocked(git.getUncommittedChanges).mockResolvedValue({ insertions: 0, deletions: 0 });
 		vi.mocked(git.getUnpreservedCount).mockResolvedValue(0);
 		vi.mocked(git.getBranchDiffStats).mockResolvedValue({ files: 0, insertions: 0, deletions: 0, fileStats: [] });
-		vi.mocked(github.findOpenPullRequest).mockResolvedValue({ pr: { number: 42, url: task.prUrl!, title: null, author: null }, isGitHub: true, status: {
+		vi.mocked(github.findOpenPullRequest).mockResolvedValue({ pr: { number: 42, url: task.prUrl!, title: null, author: null }, isGitHub: true, status: { checkedAt: 1234,
 			number: 42, url: task.prUrl!, title: "Change", state: "OPEN", headRefName: "feat/login", headRefOid: "sha", isDraft: false,
 			autoMergeRequest: null, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, author: null,
 			statusCheckRollup: [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }], unresolvedCount: 0,
 		} });
 		const push = vi.fn(); setPushMessage(push);
+		vi.mocked(runPrWatches).mockClear();
 		await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
 		expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ ciStatus: "success" }));
+		expect(runPrWatches).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ number: 42 }), task.prUrl, 1234);
 		vi.mocked(data.updateTask).mockClear(); push.mockClear();
 		await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
 		expect(data.updateTask).not.toHaveBeenCalled();
@@ -6404,7 +6406,7 @@ describe("handlers.getBranchStatus", () => {
 		vi.mocked(git.isContentMergedInto).mockResolvedValue(false);
 		vi.mocked(github.findOpenPullRequest).mockResolvedValue({
 			pr: { number: 42, url: prUrl, title: null, author: null }, isGitHub: true,
-			status: {
+			status: { checkedAt: Date.now(),
 				number: 42, url: prUrl, title: "Change", state: "OPEN", headRefName: "feat/login", headRefOid: "sha", isDraft: false,
 				autoMergeRequest: null, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null, author: null,
 				statusCheckRollup: [], unresolvedCount: 0,
@@ -12427,7 +12429,7 @@ describe("checkOpenPRsForPromotion", () => {
 	it("hands the polled PR to the PR watches of a task that has one", async () => {
 		const { project, task } = setup({ prWatches: [{ id: "w", until: "ci", prNumber: 42, headSha: "abc", createdAt: "2026-10-22T10:00:00.000Z" }] });
 		const checks = [{ name: "lint", status: "COMPLETED", conclusion: "SUCCESS" }];
-		vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ url: "https://github.com/a/b/pull/42", headRefOid: "def", statusCheckRollup: checks }));
+		vi.mocked(github.readTaskPullRequest).mockResolvedValue({ ...answer({ url: "https://github.com/a/b/pull/42", headRefOid: "def", statusCheckRollup: checks }), checkedAt: 1234 });
 		vi.mocked(runPrWatches).mockClear();
 
 		await checkOpenPRsForPromotion();
@@ -12437,6 +12439,7 @@ describe("checkOpenPRsForPromotion", () => {
 			task.id,
 			{ number: 42, state: "OPEN", headRefOid: "def", checks: [{ ...checks[0], detailsUrl: null }] },
 			"https://github.com/a/b/pull/42",
+			1234,
 		);
 	});
 

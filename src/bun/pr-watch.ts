@@ -88,7 +88,8 @@ export async function evaluatePrWatches(
 		if (watch.headSha !== head) {
 			// A subscribe-time tip is the remote's old head while our rebase or amend is unpushed; a watch behind it follows it.
 			if ((watch.tipsAtSubscribe ?? []).includes(head) && !(await git.isAncestor(watch.headSha, head))) continue;
-			if (await git.isAncestor(head, watch.headSha)) continue;
+			// With a known tip the freshness check above already filters lagging samples.
+			if (git.tips.length === 0 && (await git.isAncestor(head, watch.headSha))) continue;
 			outcome.patches[watch.id] = { headSha: head, tipsAtSubscribe: undefined };
 		}
 		const sameLook = watch.ciSeen?.head === head && watch.ciSeen.total === total;

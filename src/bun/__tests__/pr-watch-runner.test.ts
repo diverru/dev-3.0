@@ -15,6 +15,7 @@ vi.mock("../settings", () => ({ loadSettings: vi.fn() }));
 
 import * as data from "../data";
 import * as git from "../git";
+import { log } from "../rpc-handlers/shared-pure";
 import { liveAgentPaneIds, resolveScheduledMessageAuthorPane } from "../scheduled-message-author";
 import { sendMessageImmediately } from "../scheduled-message-scheduler";
 import { loadSettings } from "../settings";
@@ -164,6 +165,21 @@ describe("runPrWatches", () => {
 		vi.mocked(git.isRefMergedInto).mockResolvedValue(true); // HEAD is ahead: the sample head is its ancestor
 		await runPrWatches(project, "t1", greenSample, URL);
 		expect(sendMessageImmediately).toHaveBeenCalledTimes(1);
+	});
+
+	it("warns once per task while the remote refs disagree, and again after they agree and disagree anew", async () => {
+		const ambiguous = { tips: ["3".repeat(40), "4".repeat(40)], ambiguous: true };
+		vi.mocked(git.getRemoteBranchTips).mockResolvedValue(ambiguous);
+		await runPrWatches(project, "t1", greenSample, URL);
+		await runPrWatches(project, "t1", greenSample, URL);
+		expect(log.warn).toHaveBeenCalledTimes(1);
+		expect(sendMessageImmediately).not.toHaveBeenCalled();
+
+		vi.mocked(git.getRemoteBranchTips).mockResolvedValue({ tips: [], ambiguous: false });
+		await runPrWatches(project, "t1", pendingSample, URL);
+		vi.mocked(git.getRemoteBranchTips).mockResolvedValue(ambiguous);
+		await runPrWatches(project, "t1", greenSample, URL);
+		expect(log.warn).toHaveBeenCalledTimes(2);
 	});
 
 	it("stores a retarget without sending anything", async () => {

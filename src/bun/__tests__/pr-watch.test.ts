@@ -301,6 +301,16 @@ describe("what happens to the watch's head as the agent pushes", () => {
 		expect(back.patches["w-ci"]).toMatchObject({ headSha: B });
 	});
 
+	it("follows a reset back to an ancestor of the watch's head when a known tip says so", async () => {
+		const C = "7".repeat(40);
+		const git = fakeGit({ tips: [B], ancestors: [[B, C]] });
+		const w = watch("ci", { headSha: C, ciSeen: undefined });
+		const first = await evaluatePrWatches([w], sample({ headRefOid: B }), git, NOW);
+		expect(first.patches["w-ci"]).toMatchObject({ headSha: B });
+		const second = await evaluatePrWatches([{ ...w, ...first.patches["w-ci"] }], sample({ headRefOid: B }), git, NOW + 61_000);
+		expect(notices(second)).toEqual([{ kind: "ci-passed", sha: B, totalChecks: 2 }]);
+	});
+
 	it("gives no CI verdict, moves nothing and records nothing while the newest remote refs disagree", async () => {
 		const A = "9".repeat(40);
 		const S = "6".repeat(40);

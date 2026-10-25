@@ -13,10 +13,13 @@ export const PR_WATCH_RETRY_BACKOFF_MS = 5 * 60_000;
 const retryAfter = new Map<string, number>();
 // Two overlapping polls of one task (timer tick, popover refresh) must not both deliver.
 const inFlight = new Set<string>();
+// Tasks already warned about disagreeing remote refs; cleared when the refs agree again.
+const ambiguousWarned = new Set<string>();
 
 export function _resetPrWatchRunnerState(): void {
 	retryAfter.clear();
 	inFlight.clear();
+	ambiguousWarned.clear();
 }
 
 function isTerminal(task: Task): boolean {
@@ -80,6 +83,11 @@ async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatc
 
 	const branch = await git.getCurrentBranch(worktree);
 	const remote = branch ? await git.getRemoteBranchTips(worktree, branch) : { tips: [], ambiguous: false };
+	if (!remote.ambiguous) ambiguousWarned.delete(taskId);
+	else if (!ambiguousWarned.has(taskId)) {
+		ambiguousWarned.add(taskId);
+		log.warn("PR watch defers CI notices: same-named remote refs of the branch disagree", { taskId: taskId.slice(0, 8) });
+	}
 	const outcome = await evaluatePrWatches(watches, sample, {
 		...remote,
 		hasCommit: (sha) => git.commitExists(worktree, sha),

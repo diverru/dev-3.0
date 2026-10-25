@@ -14,13 +14,13 @@ vi.mock("../spawn", async () => {
 	return createSpawnMock();
 });
 
-import { getRemoteBranchTips } from "../git";
+import { commitExists, getRemoteBranchTips } from "../git";
 import { GIT_CONFIG_ISOLATION } from "./git-test-helpers";
 
 const IDENTITY = { GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@t.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@t.com" };
 
-function sh(cmd: string, cwd: string): string {
-	return execSync(cmd, { cwd, env: { ...process.env, ...IDENTITY, ...GIT_CONFIG_ISOLATION }, stdio: "pipe", encoding: "utf-8" }).trim();
+function sh(cmd: string, cwd: string, env: Record<string, string> = {}): string {
+	return execSync(cmd, { cwd, env: { ...process.env, ...IDENTITY, ...GIT_CONFIG_ISOLATION, ...env }, stdio: "pipe", encoding: "utf-8" }).trim();
 }
 
 let dir: string;
@@ -32,22 +32,53 @@ beforeEach(() => {
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+const setRef = (ref: string, sha: string, at: number) =>
+	sh(`git update-ref refs/remotes/${ref} ${sha}`, dir, { GIT_COMMITTER_DATE: `@${at} +0000` });
+
 describe("getRemoteBranchTips", () => {
-	it("returns what every remote last had for the branch, and nothing for other branches", async () => {
+	it("returns only the ref updated most recently, and nothing for other branches", async () => {
 		const [two, one] = sh("git rev-list HEAD", dir).split("\n");
-		sh(`git update-ref refs/remotes/origin/main ${two} && git update-ref refs/remotes/fork/feat/x ${one} && git update-ref refs/remotes/origin/feat/x ${two}`, dir);
+		setRef("origin/main", two, 1_000);
+		setRef("fork/feat/x", one, 2_000);
+		setRef("origin/feat/x", two, 3_000);
+
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([two]);
+		const three = sh("git commit -q --allow-empty -m three && git rev-parse HEAD", dir);
+		setRef("fork/feat/x", three, 4_000);
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([three]);
+	});
+
+	it("returns both when two refs were updated at the same time", async () => {
+		const [two, one] = sh("git rev-list HEAD", dir).split("\n");
+		setRef("fork/feat/x", one, 2_000);
+		setRef("origin/feat/x", two, 2_000);
 
 		expect((await getRemoteBranchTips(dir, "feat/x")).sort()).toEqual([one, two].sort());
 	});
 
+	it("returns a single ref as is", async () => {
+		const [two] = sh("git rev-list HEAD", dir).split("\n");
+		setRef("origin/feat/x", two, 2_000);
+
+		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([two]);
+	});
+
 	it("ignores a deeper path that only ends the same way", async () => {
 		const [two] = sh("git rev-list HEAD", dir).split("\n");
-		sh(`git update-ref refs/remotes/a/b/feat/x ${two}`, dir);
+		setRef("a/b/feat/x", two, 2_000);
 
 		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([]);
 	});
 
 	it("is empty when the branch was never pushed", async () => {
 		expect(await getRemoteBranchTips(dir, "feat/x")).toEqual([]);
+	});
+});
+
+describe("commitExists", () => {
+	it("is true for a commit in the repository and false for an unknown one", async () => {
+		const [two] = sh("git rev-list HEAD", dir).split("\n");
+		expect(await commitExists(dir, two)).toBe(true);
+		expect(await commitExists(dir, "f".repeat(40))).toBe(false);
 	});
 });

@@ -8,7 +8,7 @@ vi.mock("../rpc-handlers/shared-pure", () => ({
 	getPushMessage: () => push,
 }));
 vi.mock("../data", () => ({ getTask: vi.fn(), updateTaskWith: vi.fn() }));
-vi.mock("../git", () => ({ isRefMergedInto: vi.fn(), getRemoteBranchTips: vi.fn(), getCurrentBranch: vi.fn() }));
+vi.mock("../git", () => ({ isRefMergedInto: vi.fn(), getRemoteBranchTips: vi.fn(), getCurrentBranch: vi.fn(), commitExists: vi.fn() }));
 vi.mock("../scheduled-message-author", () => ({ resolveScheduledMessageAuthorPane: vi.fn(), liveAgentPaneIds: vi.fn() }));
 vi.mock("../scheduled-message-scheduler", () => ({ sendMessageImmediately: vi.fn() }));
 vi.mock("../settings", () => ({ loadSettings: vi.fn() }));
@@ -26,7 +26,7 @@ const project = { id: "p1" } as Project;
 
 function watch(until: PrWatch["until"], overrides: Partial<PrWatch> = {}): PrWatch {
 	// Already seen finished once on HEAD (one check), so the next finished sample confirms it.
-	return { id: `w-${until}`, until, prNumber: 7, headSha: HEAD, createdAt: "2026-10-22T10:00:00.000Z", ciSeen: { head: HEAD, total: 1 }, ...overrides };
+	return { id: `w-${until}`, until, prNumber: 7, headSha: HEAD, createdAt: "2026-10-22T10:00:00.000Z", ciSeen: { head: HEAD, total: 1, at: 0 }, ...overrides };
 }
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -66,6 +66,7 @@ beforeEach(() => {
 	vi.mocked(git.isRefMergedInto).mockResolvedValue(false);
 	vi.mocked(git.getCurrentBranch).mockResolvedValue("feat/x");
 	vi.mocked(git.getRemoteBranchTips).mockResolvedValue([]);
+	vi.mocked(git.commitExists).mockResolvedValue(true);
 	vi.mocked(liveAgentPaneIds).mockResolvedValue(["%1"]);
 	vi.mocked(loadSettings).mockResolvedValue({} as Awaited<ReturnType<typeof loadSettings>>);
 	vi.mocked(sendMessageImmediately).mockResolvedValue({ status: "held", spilledPath: null });
@@ -94,7 +95,7 @@ describe("runPrWatches", () => {
 		current = task({ prWatches: [watch("ci", { ciSeen: undefined })] });
 		await runPrWatches(project, "t1", greenSample, URL);
 		expect(sendMessageImmediately).not.toHaveBeenCalled();
-		expect(lastStoredWatches()).toEqual([watch("ci")]);
+		expect(lastStoredWatches()).toEqual([watch("ci", { ciSeen: { head: HEAD, total: 1, at: expect.any(Number) } })]);
 	});
 
 	it("does nothing for a task without watches", async () => {
@@ -199,7 +200,8 @@ describe("runPrWatches", () => {
 		current = task({ prWatches: [watch("ci", { prNumber: 5 })] });
 		await runPrWatches(project, "t1", greenSample, URL);
 
-		expect(vi.mocked(sendMessageImmediately).mock.calls[0][1]).toContain("PR #5 is no longer this branch's open PR (now #7)");
+		expect(vi.mocked(sendMessageImmediately).mock.calls[0][1]).toContain("PR #5 is no longer this branch's open PR; watch ended.");
+		expect(vi.mocked(sendMessageImmediately).mock.calls[0][1]).not.toContain("#7");
 		expect(lastStoredWatches()).toBeNull();
 	});
 

@@ -72,12 +72,15 @@ export const prWatchHandlers: Record<string, Handler> = {
 				typeof params.sourcePid === "number" ? params.sourcePid : null,
 			)
 			: null;
+		const branch = await git.getCurrentBranch(worktree);
+		const tipsAtSubscribe = branch ? await git.getRemoteBranchTips(worktree, branch) : [];
 		const watch: PrWatch = {
 			id: crypto.randomUUID(),
 			until,
 			prNumber: pr.number,
 			headSha,
 			createdAt: new Date().toISOString(),
+			tipsAtSubscribe,
 			...(author ? { author } : {}),
 		};
 		await addPrWatch(project, task.id, watch);

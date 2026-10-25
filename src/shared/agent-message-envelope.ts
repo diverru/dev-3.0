@@ -104,7 +104,7 @@ function prNoticeSentence(prNumber: number, notice: PrStatusNotice, completionOf
 				? `PR #${prNumber} merged. dev3 handles the completion offer; do not request task completion yourself.`
 				: `PR #${prNumber} merged. dev3 does not offer completion for this task; continue per your task rules.`;
 		case "replaced":
-			return `PR #${notice.oldNumber} is no longer this branch's open PR (now #${notice.newNumber}); watch ended. Run \`dev3 pr watch\` again to follow #${notice.newNumber}.`;
+			return `PR #${notice.oldNumber} is no longer this branch's open PR; watch ended. Run \`dev3 pr watch\` again if you still need it.`;
 		case "closed":
 			return `PR #${prNumber} closed without merge.`;
 		case "ci-passed":

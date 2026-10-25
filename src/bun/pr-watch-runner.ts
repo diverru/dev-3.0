@@ -81,6 +81,7 @@ async function runPrWatchesOnce(project: Project, taskId: string, sample: PrWatc
 	const branch = await git.getCurrentBranch(worktree);
 	const outcome = await evaluatePrWatches(watches, sample, {
 		tips: branch ? await git.getRemoteBranchTips(worktree, branch) : [],
+		hasCommit: (sha) => git.commitExists(worktree, sha),
 		isAncestor: (ancestor, descendant) => git.isRefMergedInto(worktree, ancestor, descendant),
 	});
 	const firedIds = new Set(outcome.fired.map(({ watch }) => watch.id));

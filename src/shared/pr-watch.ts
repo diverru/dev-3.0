@@ -14,8 +14,10 @@ export interface PrWatch {
 	createdAt: string;
 	/** `until: merged` only: the head whose CI failure was already reported. */
 	failedNotifiedHead?: string;
-	/** The last sample that looked finished; a verdict needs the same head and total twice in a row. */
-	ciSeen?: { head: string; total: number };
+	/** The first sample that looked finished (`at`: ms); a verdict needs the same head and total again a poll later. */
+	ciSeen?: { head: string; total: number; at: number };
+	/** Remote tips of the task branch when the watch was made; a sample showing one of them is the old push, not news. */
+	tipsAtSubscribe?: string[];
 	/** The agent process that subscribed; the message goes to its pane, never to a sibling's. */
 	author?: ScheduledMessageAuthor;
 }
@@ -29,4 +31,4 @@ export type PrStatusNotice =
 	| { kind: "ci-failed"; sha: string; failedCount: number; totalChecks: number }
 	| { kind: "merged" }
 	| { kind: "closed" }
-	| { kind: "replaced"; oldNumber: number; newNumber: number };
+	| { kind: "replaced"; oldNumber: number };

@@ -1,6 +1,10 @@
 import type { PRCheckInfo } from "../shared/types";
 import type { PrStatusNotice, PrWatch } from "../shared/pr-watch";
+import { ACTIVE_PROJECT_PENDING_PR_INTERVAL_MS } from "./rpc-handlers/git-poll-throttle";
 import { summarizeChecks } from "./rpc-handlers/pr-status";
+
+/** Two finished looks count as two only this far apart: one poll, less some slack. */
+export const PR_WATCH_CONFIRM_GAP_MS = ACTIVE_PROJECT_PENDING_PR_INTERVAL_MS - 10_000;
 
 /** The slice of one polled PR that watches are judged against. */
 export interface PrWatchSample {
@@ -15,6 +19,8 @@ export interface PrWatchSample {
 export interface PrWatchGit {
 	/** What the remotes last had for the task's own branch; empty when it was never pushed. */
 	tips: readonly string[];
+	/** Is this commit in the local repository? A head pushed by someone else is not. */
+	hasCommit(sha: string): Promise<boolean>;
 	/** True when `ancestor` is an ancestor of `descendant`; false too when either commit is unknown here. */
 	isAncestor(ancestor: string, descendant: string): Promise<boolean>;
 }
@@ -32,25 +38,27 @@ export interface PrWatchOutcome {
  * Judge a task's watches against one polled PR. A merge or close is a fact about the
  * PR whatever its head. A watch whose PR is no longer the branch's open PR ends.
  *
- * For CI the verdict is only about a head that is really on the remote. With remote
- * tips known, a sample head must equal a tip or descend from one, else it is stale (a
- * lagging poll after a push, a pre-rebase head) and is skipped. A watch whose own head
- * is not under any tip has not been pushed yet and does not move. A fresh head the
- * watch does not have (the agent pushed again, or someone else did) moves it. Without
- * tips nothing is known, and only a head that is an older ancestor of the watch's is
- * skipped. A finished-looking run counts once seen twice in a row on one head with one
- * total, because some checks join the rollup late.
+ * For CI the verdict is only about a head that is really the PR's now. With remote tips
+ * known, a sample head this repository has must equal a tip or descend from one, else it
+ * is stale (a lagging poll after a push or force-push, a pre-rebase head) and is skipped;
+ * a head it does not have is someone else's push and counts as fresh, with no fetch.
+ * A fresh head the watch does not have moves it, except one of the tips the branch had
+ * when the watch was made: that is the push the watch was made after. Without tips only
+ * a head that is an older ancestor of the watch's is skipped. A finished-looking run
+ * counts once seen again a poll later on one head with one total, because some checks
+ * join the rollup late.
  */
 export async function evaluatePrWatches(
 	watches: readonly PrWatch[],
 	sample: PrWatchSample,
 	git: PrWatchGit,
+	now: number = Date.now(),
 ): Promise<PrWatchOutcome> {
 	const outcome: PrWatchOutcome = { fired: [], removeIds: [], patches: {} };
 	const state = sample.state?.toUpperCase();
 	if (state === "OPEN") {
 		for (const watch of watches.filter((w) => w.prNumber !== sample.number)) {
-			outcome.fired.push({ watch, notice: { kind: "replaced", oldNumber: watch.prNumber, newNumber: sample.number } });
+			outcome.fired.push({ watch, notice: { kind: "replaced", oldNumber: watch.prNumber } });
 			outcome.removeIds.push(watch.id);
 		}
 	}
@@ -68,25 +76,23 @@ export async function evaluatePrWatches(
 
 	const { total, pending, failed } = summarizeChecks(sample.checks);
 	const ciDone = total > 0 && pending === 0;
-	const onRemote = async (sha: string) => {
-		for (const tip of git.tips) if (tip === sha || (await git.isAncestor(sha, tip))) return true;
-		return false;
-	};
-	if (git.tips.length > 0) {
+	if (git.tips.length > 0 && (await git.hasCommit(head))) {
 		let fresh = false;
 		for (const tip of git.tips) fresh ||= tip === head || (await git.isAncestor(tip, head));
 		if (!fresh) return outcome;
 	}
 	for (const watch of mine) {
 		if (watch.headSha !== head) {
-			if (git.tips.length > 0 && !(await onRemote(watch.headSha))) continue;
+			if ((watch.tipsAtSubscribe ?? []).includes(head)) continue;
 			if (await git.isAncestor(head, watch.headSha)) continue;
 			outcome.patches[watch.id] = { headSha: head };
 		}
-		const seen = ciDone ? { head, total } : undefined;
-		const confirmed = ciDone && watch.ciSeen?.head === head && watch.ciSeen.total === total;
-		if (watch.ciSeen?.head !== seen?.head || watch.ciSeen?.total !== seen?.total) {
-			outcome.patches[watch.id] = { ...outcome.patches[watch.id], ciSeen: seen };
+		const sameLook = watch.ciSeen?.head === head && watch.ciSeen.total === total;
+		const confirmed = ciDone && sameLook && now - (watch.ciSeen?.at ?? 0) >= PR_WATCH_CONFIRM_GAP_MS;
+		if (ciDone && !sameLook) {
+			outcome.patches[watch.id] = { ...outcome.patches[watch.id], ciSeen: { head, total, at: now } };
+		} else if (!ciDone && watch.ciSeen) {
+			outcome.patches[watch.id] = { ...outcome.patches[watch.id], ciSeen: undefined };
 		}
 		if (!confirmed) continue;
 		const failedNotice: PrStatusNotice = { kind: "ci-failed", sha: head, failedCount: failed.length, totalChecks: total };

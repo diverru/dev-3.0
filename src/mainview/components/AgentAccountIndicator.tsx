@@ -75,9 +75,8 @@ export function agentAccountKindForCommand(baseCommand: string): AgentAccountKin
 export function useAgentAccountsState(enabled: boolean): AgentAccountsState | null {
 	const [state, setState] = useState<AgentAccountsState | null>(null);
 	const reload = useCallback(() => {
-		// Promise.resolve absorbs a missing RPC method in plain-object api mocks.
-		Promise.resolve()
-			.then(() => api.request.listAgentAccounts())
+		api.request
+			.listAgentAccounts()
 			.then(setState)
 			.catch(() => {});
 	}, []);

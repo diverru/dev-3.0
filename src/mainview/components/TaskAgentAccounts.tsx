@@ -1,5 +1,9 @@
+import { useEffect, useState } from "react";
+import type { ProjectClaudeLogin } from "../../shared/agent-accounts";
 import type { CodingAgent, Task } from "../../shared/types";
 import { useT } from "../i18n";
+import { api } from "../rpc";
+import { useStreamerMode } from "../streamer-mode";
 import { describeTaskAgentAccounts } from "../utils/taskAgentAccounts";
 import { useAgentAccountsState } from "./AgentAccountIndicator";
 import AgentLauncherBadge, { resolveAgentLauncherIcon } from "./AgentLauncherBadge";
@@ -9,8 +13,20 @@ const TAG_CLASS = "rounded px-1 text-nano font-semibold uppercase tracking-wider
 /** Mount only while the hover surface is open: it fetches the account registry. */
 export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: CodingAgent[] }) {
 	const t = useT();
+	const streamer = useStreamerMode();
 	const accounts = useAgentAccountsState(true);
-	const rows = describeTaskAgentAccounts(task, agents, accounts);
+	const needsProjectLogin = describeTaskAgentAccounts(task, agents, null).some((r) => r.onSystemClaude);
+	const [projectLogin, setProjectLogin] = useState<ProjectClaudeLogin | null>(null);
+	useEffect(() => {
+		if (!needsProjectLogin) return;
+		let cancelled = false;
+		api.request
+			.getProjectClaudeLogin({ projectId: task.projectId })
+			.then((res) => { if (!cancelled) setProjectLogin(res); })
+			.catch(() => {});
+		return () => { cancelled = true; };
+	}, [needsProjectLogin, task.projectId]);
+	const rows = describeTaskAgentAccounts(task, agents, accounts, projectLogin);
 	if (rows.length === 0) return null;
 
 	return (
@@ -20,17 +36,20 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 					{agent && resolveAgentLauncherIcon(agent) && <AgentLauncherBadge agent={agent} size={12} />}
 					<span className="flex-shrink-0 text-fg-3">{agentName}</span>
 					{account.kind === "managed" && (
-						<span className="min-w-0 truncate font-medium text-fg-2 streamer-private">{account.label}</span>
+						<span className="min-w-0 truncate font-medium text-fg-2 streamer-private" title={streamer ? undefined : account.label}>{account.label}</span>
 					)}
 					{account.kind === "system" && (
 						<span className="flex-shrink-0 text-fg-2">{t("taskAgents.systemLogin")}</span>
+					)}
+					{account.kind === "project" && (
+						<span className="flex-shrink-0 text-fg-2">{t("taskAgents.projectLogin")}</span>
 					)}
 					{account.kind === "deleted" && (
 						<span className="text-fg-3 italic">{t("taskAgents.deleted")}</span>
 					)}
 					{account.kind === "default" && <span className="text-fg-3">{t("taskAgents.default")}</span>}
-					{(account.kind === "managed" || account.kind === "system") && account.email && (
-						<span className="min-w-0 truncate font-mono text-fg-3 streamer-private" title={account.email}>
+					{(account.kind === "managed" || account.kind === "system" || account.kind === "project") && account.email && (
+						<span className="min-w-0 truncate font-mono text-fg-3 streamer-private" title={streamer ? undefined : account.email}>
 							{account.email}
 						</span>
 					)}

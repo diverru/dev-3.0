@@ -419,6 +419,7 @@ const kanban = {
 	"taskHover.none": "\u2014",
 	"taskAgents.title": "Agentes",
 	"taskAgents.systemLogin": "Inicio de sesión del sistema",
+	"taskAgents.projectLogin": "Inicio de sesión del proyecto",
 	"taskAgents.deleted": "Cuenta eliminada",
 	"taskAgents.default": "Cuenta predeterminada",
 	"taskAgents.auto": "Auto",

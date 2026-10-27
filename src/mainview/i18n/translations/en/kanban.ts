@@ -420,6 +420,7 @@ const kanban = {
 	"taskHover.none": "\u2014",
 	"taskAgents.title": "Agents",
 	"taskAgents.systemLogin": "System login",
+	"taskAgents.projectLogin": "Project login",
 	"taskAgents.deleted": "Deleted account",
 	"taskAgents.default": "Default account",
 	"taskAgents.auto": "Auto",

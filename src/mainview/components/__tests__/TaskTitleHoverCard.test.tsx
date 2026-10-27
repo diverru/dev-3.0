@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TaskTitleHoverCard from "../TaskTitleHoverCard";
@@ -8,6 +8,10 @@ import type { CodingAgent, Task } from "../../../shared/types";
 vi.mock("../../rpc", () => ({
 	api: {
 		request: {
+			getProjectClaudeLogin: vi.fn().mockResolvedValue({
+				configDir: "/home/me/.claude-proj",
+				identity: { email: "proj@example.com", organization: null, plan: null, planLabel: null, accountId: null },
+			}),
 			listAgentAccounts: vi.fn().mockResolvedValue({
 				claude: {
 					accounts: [{ id: "a1", kind: "claude", label: "Work", identity: { email: "work@example.com" }, auth: "api", api: null, createdAt: 0 }],
@@ -37,6 +41,8 @@ function renderCard(task: Partial<Task>) {
 }
 
 describe("TaskTitleHoverCard — agents row", () => {
+	afterEach(() => localStorage.removeItem("dev3-streamer-mode"));
+
 	it("lists the agent's account after hover", async () => {
 		renderCard({ agentId: "builtin-claude", accountId: "a1" });
 		await userEvent.setup().hover(screen.getByText("trigger"));
@@ -50,5 +56,27 @@ describe("TaskTitleHoverCard — agents row", () => {
 		await userEvent.setup().hover(screen.getByText("trigger"));
 		expect(screen.getByTestId("task-title-hover-card")).toBeTruthy();
 		expect(screen.queryByText("Agents")).toBeNull();
+	});
+
+	it("sets a tooltip with the email, but not in streamer mode", async () => {
+		renderCard({ agentId: "builtin-claude", accountId: "a1" });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		expect((await screen.findByText("Work")).getAttribute("title")).toBe("Work");
+		expect(screen.getByText("work@example.com").getAttribute("title")).toBe("work@example.com");
+	});
+
+	it("sets no tooltip in streamer mode", async () => {
+		localStorage.setItem("dev3-streamer-mode", "on");
+		renderCard({ agentId: "builtin-claude", accountId: "a1" });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		expect((await screen.findByText("Work")).hasAttribute("title")).toBe(false);
+		expect(screen.getByText("work@example.com").hasAttribute("title")).toBe(false);
+	});
+
+	it("shows the project login email for a claude agent on the system login", async () => {
+		renderCard({ agentId: "builtin-claude", accountId: null });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		expect(await screen.findByText("Project login")).toBeTruthy();
+		expect(await screen.findByText("proj@example.com")).toBeTruthy();
 	});
 });

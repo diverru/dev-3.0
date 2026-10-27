@@ -67,10 +67,35 @@ describe("describeTaskAgentAccounts", () => {
 		expect(row.auto).toBe(true);
 	});
 
-	it("treats the literal auto id as Auto on the default account", () => {
+	it("treats the literal auto id as Auto with no account text", () => {
 		const [row] = describeTaskAgentAccounts(task({ accountId: "auto", sessionState: { panes: [pane({})] } }), agents, accounts);
 		expect(row.auto).toBe(true);
-		expect(row.account).toEqual({ kind: "default" });
+		expect(row.account).toEqual({ kind: "unknown" });
+	});
+
+	it("does not flag Auto on an extra pane when the main pane is parked", () => {
+		const rows = describeTaskAgentAccounts(
+			task({
+				accountId: "a1",
+				accountPick: { reason: { code: "only", short: null }, at: "x" },
+				sessionState: { panes: [pane({ parked: true }), pane({ accountId: "a1" })] },
+			}),
+			agents, accounts,
+		);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({ key: 1, auto: false });
+	});
+
+	it("follows the pane's agent family for a wrapper command", () => {
+		const [row] = describeTaskAgentAccounts(
+			task({ sessionState: { panes: [pane({ agentCmd: "ccr code", agentFamily: "claude", accountId: "a1" })] } }),
+			agents, accounts,
+		);
+		expect(row.account).toMatchObject({ kind: "managed", label: "Work" });
+	});
+
+	it("returns nothing when every pane is parked", () => {
+		expect(describeTaskAgentAccounts(task({ sessionState: { panes: [pane({ parked: true })] } }), agents, accounts)).toEqual([]);
 	});
 
 	it("marks API accounts", () => {
@@ -149,9 +174,18 @@ describe("describeTaskAgentAccounts", () => {
 	it("does not throw for a pane whose agent is gone or a registry is missing", () => {
 		const partial = { claude: accounts.claude, codex: accounts.codex } as AgentAccountsState;
 		const rows = describeTaskAgentAccounts(
-			task({ sessionState: { panes: [pane({ agentId: "nope", agentCmd: "/usr/bin/omp --x", accountId: "x" })] } }),
+			task({ sessionState: { panes: [pane({ agentId: "nope", agentCmd: "/usr/bin/omp", accountId: "x" })] } }),
 			agents, partial,
 		);
 		expect(rows[0]).toMatchObject({ agentName: "omp", account: { kind: "deleted" } });
+	});
+
+	it("shows the project login for a null-id claude pane when the project pins one", () => {
+		const projectLogin = { configDir: "/home/me/.claude-proj", identity: { email: "proj@example.com", organization: null, plan: null, planLabel: null, accountId: null } };
+		const t = task({ accountId: null, sessionState: { panes: [pane({}), pane({ agentCmd: "codex", agentId: "builtin-codex", accountId: null })] } });
+		const rows = describeTaskAgentAccounts(t, agents, accounts, projectLogin);
+		expect(rows[0].account).toEqual({ kind: "project", email: "proj@example.com" });
+		expect(rows[1].account).toEqual({ kind: "system", email: "codex-system@example.com" });
+		expect(describeTaskAgentAccounts(t, agents, accounts, { configDir: null, identity: null })[0].account).toEqual({ kind: "system", email: "system@example.com" });
 	});
 });

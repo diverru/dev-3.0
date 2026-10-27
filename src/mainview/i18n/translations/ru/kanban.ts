@@ -435,6 +435,7 @@ const kanban = {
 	"taskHover.none": "\u2014",
 	"taskAgents.title": "Агенты",
 	"taskAgents.systemLogin": "Системный логин",
+	"taskAgents.projectLogin": "Логин проекта",
 	"taskAgents.deleted": "Удалённый аккаунт",
 	"taskAgents.default": "Аккаунт по умолчанию",
 	"taskAgents.auto": "Auto",

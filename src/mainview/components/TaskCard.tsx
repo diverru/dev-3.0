@@ -1342,6 +1342,8 @@ function TaskCard({ task, project, dispatch, navigate, agents, onLaunchVariants,
 				userOverview={task.userOverview ?? null}
 				description={task.description}
 				attentionReasons={bellReasons}
+				task={task}
+				agents={agents}
 			/>
 		</div>
 	);

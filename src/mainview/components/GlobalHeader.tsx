@@ -1096,6 +1096,7 @@ function GlobalHeader({ route, projects, tasks, agents, navigate, goBack, goForw
 								<TaskTitleHoverCard
 									task={seg.task}
 									project={projects.find((p) => p.id === seg.task?.projectId) ?? null}
+									agents={agents}
 								>
 									<NativeBackendMark
 										task={seg.task}

@@ -56,7 +56,7 @@ vi.mock("../changelog-bundled", () => ({
 	get BUNDLED_CHANGELOG() { return mockBundledChangelog; },
 }));
 
-vi.mock("../pr-watch-runner", () => ({ runPrWatches: vi.fn(async () => undefined) }));
+vi.mock("../pr-watch-runner", () => ({ runPrWatches: vi.fn(async () => undefined), mergeOfferHeld: vi.fn(() => false) }));
 
 vi.mock("../data", () => ({
 	getProject: vi.fn(),
@@ -421,7 +421,7 @@ import * as data from "../data";
 import { clearResourceMonitorBoost, isResourceMonitorBoosted } from "../resource-monitor";
 import * as git from "../git";
 import * as github from "../github";
-import { runPrWatches } from "../pr-watch-runner";
+import { mergeOfferHeld, runPrWatches } from "../pr-watch-runner";
 import * as pty from "../pty-server";
 import { getUserShell } from "../shell-env";
 import { tmux } from "../tmux";
@@ -6405,7 +6405,7 @@ describe("handlers.getBranchStatus", () => {
 		vi.mocked(runPrWatches).mockClear();
 		await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
 		expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ ciStatus: "success" }));
-		expect(runPrWatches).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ number: 42 }), task.prUrl, 1234);
+		expect(runPrWatches).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ number: 42 }), task.prUrl, 1234, undefined);
 		vi.mocked(data.updateTask).mockClear(); push.mockClear();
 		await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
 		expect(data.updateTask).not.toHaveBeenCalled();
@@ -12464,7 +12464,64 @@ describe("checkOpenPRsForPromotion", () => {
 			{ number: 42, state: "OPEN", headRefOid: "def", checks: [{ ...checks[0], detailsUrl: null }] },
 			"https://github.com/a/b/pull/42",
 			1234,
+			undefined,
 		);
+	});
+
+	describe("the merge-completion offer hold for a watching agent", () => {
+		const watched = { prNumber: 42, prWatches: [{ id: "w", until: "merged" as const, prNumber: 42, headSha: "head-sha", createdAt: "2026-10-22T10:00:00.000Z" }] };
+
+		beforeEach(() => {
+			vi.mocked(runPrWatches).mockClear();
+			vi.mocked(mergeOfferHeld).mockReset().mockReturnValue(false);
+		});
+
+		afterEach(() => {
+			vi.mocked(mergeOfferHeld).mockReset().mockReturnValue(false);
+		});
+
+		it("hands the watch whether the merged PR covers the head, and offers nothing while the hold lasts", async () => {
+			setup(watched);
+			vi.mocked(mergeOfferHeld).mockReturnValue(true);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ state: "MERGED" }));
+			const push = vi.fn(); setPushMessage(push);
+
+			await checkOpenPRsForPromotion();
+
+			expect(runPrWatches).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ state: "MERGED" }), expect.anything(), expect.anything(), true);
+			expect(push).not.toHaveBeenCalledWith("branchMerged", expect.anything());
+		});
+
+		it("offers the merge once the hold is over", async () => {
+			setup(watched);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ state: "MERGED" }));
+			const push = vi.fn(); setPushMessage(push);
+
+			await checkOpenPRsForPromotion();
+
+			expect(push).toHaveBeenCalledWith("branchMerged", expect.anything());
+		});
+
+		it("tells the runner when the worktree has work the merged PR does not cover", async () => {
+			setup(watched);
+			vi.mocked(git.isWorktreeDirty).mockResolvedValue(true);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ state: "MERGED" }));
+
+			await checkOpenPRsForPromotion();
+
+			expect(runPrWatches).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), false);
+		});
+
+		it("offers an unwatched merged PR at once", async () => {
+			setup({ prNumber: 42 });
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ state: "MERGED" }));
+			const push = vi.fn(); setPushMessage(push);
+
+			await checkOpenPRsForPromotion();
+
+			expect(runPrWatches).not.toHaveBeenCalled();
+			expect(push).toHaveBeenCalledWith("branchMerged", expect.anything());
+		});
 	});
 
 	it("polls a watched task every minute even in a background project, an unwatched one every five minutes", async () => {
@@ -12782,6 +12839,29 @@ describe("startMergeDetectionPoller / stopMergeDetectionPoller", () => {
 
 		setIntervalSpy.mockRestore();
 		clearIntervalSpy.mockRestore();
+	});
+
+	it("does not offer a merged branch while a watching agent handles it, and offers it after the hold", async () => {
+		const project = makeProject();
+		const task = makeTask({ status: "review-by-colleague", worktreePath: "/tmp/test-worktree", branchName: "dev3/task-test" });
+		const push = vi.fn();
+		vi.mocked(mergeOfferHeld).mockReset().mockReturnValue(true);
+		vi.mocked(data.loadProjects).mockResolvedValue([project]);
+		vi.mocked(data.loadTasks).mockResolvedValue([task]);
+		vi.mocked(git.fetchOrigin).mockResolvedValue(true);
+		vi.mocked(git.getCurrentBranch).mockResolvedValue("dev3/task-test");
+		vi.mocked(git.getUnpushedCount).mockResolvedValue(0);
+		vi.mocked(git.isContentMergedInto).mockResolvedValue(true);
+		setPushMessage(push);
+
+		startMergeDetectionPoller();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(push).not.toHaveBeenCalledWith("branchMerged", expect.anything());
+
+		vi.mocked(mergeOfferHeld).mockReturnValue(false);
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(push).toHaveBeenCalledWith("branchMerged", expect.objectContaining({ taskId: task.id }));
+		vi.mocked(mergeOfferHeld).mockReset().mockReturnValue(false);
 	});
 
 	it("notifies about merged PR Review tasks on the first 60-second poll", async () => {
@@ -13533,6 +13613,7 @@ describe("prepareMergeCompletionPrompt (force re-check)", () => {
 		vi.mocked(loadSettings).mockResolvedValue({ updateChannel: "stable", taskSortOrder: "oldest-first" } as any);
 		vi.mocked(data.getProject).mockResolvedValue(project);
 		vi.mocked(data.updateTask).mockImplementation(async (_p: Project, _id: string, patch: Partial<Task>) => makeTask(patch));
+		vi.mocked(mergeOfferHeld).mockReset().mockReturnValue(false);
 	});
 
 	afterEach(() => {
@@ -13568,6 +13649,21 @@ describe("prepareMergeCompletionPrompt (force re-check)", () => {
 				precise: true,
 			},
 		});
+	});
+
+	it("keeps the offer back while a watching agent handles the merge, without reserving, and force bypasses it", async () => {
+		vi.mocked(data.getTask).mockResolvedValue(makeTask({ status: "review-by-user" }));
+		vi.mocked(mergeOfferHeld).mockReturnValue(true);
+		const params = { taskId: "task-1", projectId: "proj-1", fingerprint: FINGERPRINT };
+
+		expect(await handlers.prepareMergeCompletionPrompt(params)).toEqual({ shouldPrompt: false, shouldNotify: false, fingerprint: FINGERPRINT });
+		expect(data.updateTask).not.toHaveBeenCalled();
+
+		vi.mocked(mergeOfferHeld).mockReturnValue(false);
+		expect((await handlers.prepareMergeCompletionPrompt(params)).shouldPrompt).toBe(true);
+
+		vi.mocked(mergeOfferHeld).mockReturnValue(true);
+		expect((await handlers.prepareMergeCompletionPrompt({ ...params, force: true })).shouldPrompt).toBe(true);
 	});
 
 	it("force bypasses the in-memory reservation that mutes back-to-back non-forced checks", async () => {

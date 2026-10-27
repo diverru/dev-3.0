@@ -52,7 +52,7 @@ import {
 } from "./service";
 import { activitiesFor } from "./machine";
 import { lifecycleStateFromTask } from "./state";
-import { runPrWatches } from "../pr-watch-runner";
+import { mergeOfferHeld, runPrWatches } from "../pr-watch-runner";
 
 // Bound PR reads so a slow GitHub connection cannot stall status updates.
 export const PR_DETECTION_TIMEOUT_MS = 15_000;
@@ -85,6 +85,10 @@ export async function prepareMergeCompletionPrompt(params: { taskId: string; pro
 	const fingerprint = params.fingerprint
 		? { fingerprint: params.fingerprint, precise: params.fingerprint.startsWith("v1:") }
 		: await getMergeCompletionFingerprint(task, task.branchName);
+	// Skipped without reserving, so a later check offers normally; force is the user's own refresh.
+	if (params.force !== true && mergeOfferHeld(task)) {
+		return { shouldPrompt: false, fingerprint: fingerprint.fingerprint, shouldNotify: false };
+	}
 	const promptedAt = new Date().toISOString();
 	const previousReservation = lifecycleActorRuntime(task.id).mergePromptReservation;
 	const updated = await dispatchLifecycleEvent(project.id, task.id, {
@@ -273,6 +277,8 @@ async function checkMergedBranches(): Promise<void> {
 					merged = await git.isContentMergedInto(task.worktreePath!, ref, project);
 				}
 				if (!merged) continue;
+				// Skipped without reserving: a watching agent handles the merge first.
+				if (mergeOfferHeld(task)) continue;
 
 				log.info("Branch merge detected", { taskId: task.id.slice(0, 8), branch: branchName });
 				await dispatchLifecycleFinding(project, task, {
@@ -513,15 +519,16 @@ export async function reportTaskPrStatus(
 		signalKey,
 		...(signalReason ? { signalReason } : {}),
 	});
+	const mergeCoversHead = matchesBranch && mergeState.state === "MERGED" ? await mergedPrCoversHead(project, task, pr) : undefined;
 	if (task.prWatches?.length) {
 		try {
 			const headRefOid = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-			await runPrWatches(project, task.id, { number: prNumber, state: mergeState.state, headRefOid, checks }, prUrl ?? "", checkedAt);
+			await runPrWatches(project, task.id, { number: prNumber, state: mergeState.state, headRefOid, checks }, prUrl ?? "", checkedAt, mergeCoversHead);
 		} catch (err) {
 			log.warn("PR watch evaluation failed", { taskId: task.id.slice(0, 8), error: String(err) });
 		}
 	}
-	if (matchesBranch && mergeState.state === "MERGED" && await mergedPrCoversHead(project, task, pr)) {
+	if (mergeCoversHead && !mergeOfferHeld(task)) {
 		const fingerprint = await getMergeCompletionFingerprint(task, branchName);
 		await dispatchLifecycleFinding(project, task, {
 			type: "mergeDetected",

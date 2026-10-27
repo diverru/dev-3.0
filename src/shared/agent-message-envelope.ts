@@ -146,12 +146,18 @@ export function wrapArtifactMessage(
 	].join("\n");
 }
 
-function prNoticeSentence(prNumber: number, notice: PrStatusNotice, completionOffered: boolean): string {
+export type PrMergedCompletion = "offered" | "not-offered" | "after-local-work";
+
+const PR_MERGED_SENTENCE: Record<PrMergedCompletion, (prNumber: number) => string> = {
+	offered: (n) => `PR #${n} merged. Wrap up now (final report, notes, report to whoever started you); dev3 offers the user task completion after your turn ends, so do not request it yourself.`,
+	"not-offered": (n) => `PR #${n} merged. dev3 does not offer completion for this task; continue per your task rules.`,
+	"after-local-work": (n) => `PR #${n} merged, but this worktree has uncommitted changes or commits the PR does not include; dev3 offers completion only once they are merged or dropped.`,
+};
+
+function prNoticeSentence(prNumber: number, notice: PrStatusNotice, completion: PrMergedCompletion): string {
 	switch (notice.kind) {
 		case "merged":
-			return completionOffered
-				? `PR #${prNumber} merged. dev3 handles the completion offer; do not request task completion yourself.`
-				: `PR #${prNumber} merged. dev3 does not offer completion for this task; continue per your task rules.`;
+			return PR_MERGED_SENTENCE[completion](prNumber);
 		case "replaced":
 			return `PR #${notice.oldNumber} is no longer this branch's open PR; watch ended. Run \`dev3 pr watch\` again if you still need it.`;
 		case "closed":
@@ -200,10 +206,10 @@ export function wrapPrStatusMessage(input: {
 	notices: readonly PrStatusNotice[];
 	/** Kinds of watch that remain on the task after this message. */
 	remaining: readonly PrWatchUntil[];
-	/** False when the merge path only posts a notice (manual completion, or the offer switched off). */
-	completionOffered: boolean;
+	/** What the merge path does next: offer completion, only post a notice, or wait for local work to land. */
+	completion: PrMergedCompletion;
 }): string {
-	const sentences = [...new Set(input.notices.map((notice) => prNoticeSentence(input.prNumber, notice, input.completionOffered)))];
+	const sentences = [...new Set(input.notices.map((notice) => prNoticeSentence(input.prNumber, notice, input.completion)))];
 	const lines = ["<dev3-pr-status>", ...sentences];
 	if (isPlainPullRequestUrl(input.url, input.prNumber)) lines.push(input.url);
 	lines.push(

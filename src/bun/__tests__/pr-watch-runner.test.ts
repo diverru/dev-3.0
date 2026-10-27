@@ -19,7 +19,16 @@ import { log } from "../rpc-handlers/shared-pure";
 import { liveAgentPaneIds, resolveScheduledMessageAuthorPane } from "../scheduled-message-author";
 import { sendMessageImmediately } from "../scheduled-message-scheduler";
 import { loadSettings } from "../settings";
-import { PR_WATCH_RETRY_BACKOFF_MS, _resetPrWatchRunnerState, addPrWatch, clearPrWatches, runPrWatches } from "../pr-watch-runner";
+import {
+	MERGE_OFFER_AFTER_NOTICE_HOLD_MS,
+	MERGE_OFFER_WATCH_HOLD_MS,
+	PR_WATCH_RETRY_BACKOFF_MS,
+	_resetPrWatchRunnerState,
+	addPrWatch,
+	clearPrWatches,
+	mergeOfferHeld,
+	runPrWatches,
+} from "../pr-watch-runner";
 
 const HEAD = "2222222222222222222222222222222222222222";
 const URL = "https://github.com/acme/app/pull/7";
@@ -209,9 +218,20 @@ describe("runPrWatches", () => {
 		const merged = { ...greenSample, state: "MERGED" };
 		const sentText = () => vi.mocked(sendMessageImmediately).mock.calls[0][1];
 
-		it("leaves completion to dev3 when dev3 will offer it", async () => {
+		it("tells the agent to wrap up when dev3 will offer completion after its turn", async () => {
 			await runPrWatches(project, "t1", merged, URL, Date.now());
-			expect(sentText()).toContain("dev3 handles the completion offer");
+			expect(sentText()).toContain("Wrap up now (final report, notes, report to whoever started you); dev3 offers the user task completion after your turn ends");
+		});
+
+		it("says completion waits for local work when the merged PR does not cover the worktree head", async () => {
+			await runPrWatches(project, "t1", merged, URL, Date.now(), false);
+			expect(sentText()).toContain("uncommitted changes or commits the PR does not include");
+		});
+
+		it("does not claim an offer for manual completion even when the PR does not cover the head", async () => {
+			current = task({ manualCompletion: true });
+			await runPrWatches(project, "t1", merged, URL, Date.now(), false);
+			expect(sentText()).toContain("dev3 does not offer completion for this task");
 		});
 
 		it("says no completion is offered for a task with manual completion", async () => {
@@ -434,6 +454,66 @@ describe("runPrWatches", () => {
 		current = task({ status: "completed" });
 		await runPrWatches(project, "t1", greenSample, URL, Date.now());
 		expect(sendMessageImmediately).not.toHaveBeenCalled();
+	});
+});
+
+describe("the merge-completion offer hold", () => {
+	const merged = { ...greenSample, state: "MERGED" };
+	const withoutWatches = () => ({ ...current, prWatches: null }) as Task;
+
+	it("starts when the merged message is delivered and ends after the post-notice window", async () => {
+		await runPrWatches(project, "t1", merged, URL, Date.now());
+		const now = Date.now();
+
+		expect(mergeOfferHeld(withoutWatches(), now)).toBe(true);
+		expect(mergeOfferHeld(withoutWatches(), now + MERGE_OFFER_AFTER_NOTICE_HOLD_MS + 1_000)).toBe(false);
+	});
+
+	it("is not started by a message that carries no merged notice", async () => {
+		await runPrWatches(project, "t1", greenSample, URL, Date.now());
+		expect(sendMessageImmediately).toHaveBeenCalledTimes(1);
+		expect(mergeOfferHeld(withoutWatches())).toBe(false);
+	});
+
+	it("is not started when the message was not delivered", async () => {
+		vi.mocked(sendMessageImmediately).mockRejectedValue(new Error("pane gone"));
+		await runPrWatches(project, "t1", merged, URL, Date.now());
+		expect(mergeOfferHeld(withoutWatches())).toBe(false);
+	});
+
+	it("holds while a watch waits on a receivable agent, and expires even though the watch stays", () => {
+		const now = 1_000_000;
+		expect(mergeOfferHeld(task(), now)).toBe(true);
+		expect(mergeOfferHeld(task(), now + MERGE_OFFER_WATCH_HOLD_MS - 1)).toBe(true);
+		expect(mergeOfferHeld(task(), now + MERGE_OFFER_WATCH_HOLD_MS + 1)).toBe(false);
+		// A later sighting does not restart the clock.
+		expect(mergeOfferHeld(task(), now + 2 * MERGE_OFFER_WATCH_HOLD_MS)).toBe(false);
+	});
+
+	it("does not extend the clock on later calls", () => {
+		const now = 1_000_000;
+		expect(mergeOfferHeld(task(), now)).toBe(true);
+		expect(mergeOfferHeld(task(), now + MERGE_OFFER_WATCH_HOLD_MS - 1_000)).toBe(true);
+		expect(mergeOfferHeld(task(), now + MERGE_OFFER_WATCH_HOLD_MS + 1_000)).toBe(false);
+	});
+
+	it.each([
+		["hibernated", { hibernated: true }],
+		["has no panes", { sessionState: { panes: [] } }],
+		["waits on a question", { status: "user-questions" }],
+	])("does not hold for a watch whose agent %s", (_label, overrides) => {
+		expect(mergeOfferHeld(task(overrides as Partial<Task>))).toBe(false);
+	});
+
+	it("does not hold a task without watches", () => {
+		expect(mergeOfferHeld(task({ prWatches: null }))).toBe(false);
+		expect(mergeOfferHeld(task({ prWatches: [] }))).toBe(false);
+	});
+
+	it("is forgotten by the state reset", async () => {
+		await runPrWatches(project, "t1", merged, URL, Date.now());
+		_resetPrWatchRunnerState();
+		expect(mergeOfferHeld(withoutWatches())).toBe(false);
 	});
 });
 

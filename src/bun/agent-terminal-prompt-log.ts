@@ -26,6 +26,7 @@ import { releaseStrandedAgentMessagesOnSubmission } from "./agent-message-hold";
 import { appendAgentMessageLog } from "./agent-message-log";
 import { claimDev3TypedPrompt } from "./agent-typed-prompt-claims";
 import { createLogger } from "./logger";
+import { releaseMergeOfferHoldOnSubmission } from "./pr-watch-runner";
 
 const log = createLogger("agent-terminal-prompt");
 
@@ -98,6 +99,7 @@ export function recordTerminalPromptSubmission(
 	// Before every filter: a stranded peer message is an envelope, and the agent
 	// reporting it submitted is the only proof that box is free again.
 	releaseStrandedAgentMessagesOnSubmission(task.id, prompt);
+	releaseMergeOfferHoldOnSubmission(task.id, prompt);
 	const text = normalizeSubmittedPrompt(prompt);
 	if (!text) return "empty";
 	if (isDev3EnvelopeText(text)) return "envelope";

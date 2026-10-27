@@ -1,6 +1,7 @@
 import { taskCompletesManually, type Project, type Task } from "../shared/types";
 import type { PrWatch } from "../shared/pr-watch";
 import { prStatusSubject, wrapPrStatusMessage } from "../shared/agent-message-envelope";
+import { submissionMatchesTypedText } from "../shared/agent-terminal-prompt";
 import * as data from "./data";
 import * as git from "./git";
 import { loadSettings } from "./settings";
@@ -12,10 +13,12 @@ export const PR_WATCH_RETRY_BACKOFF_MS = 5 * 60_000;
 
 /** Longest hold on the merge-completion offer while a watch has not delivered yet (dead or stuck agent). */
 export const MERGE_OFFER_WATCH_HOLD_MS = 10 * 60_000;
+/** Cover left after the agent submitted the merged text: Codex and Copilot move the card to in-progress through a separate hook that may land later. */
+export const MERGE_OFFER_SUBMITTED_GRACE_MS = 30_000;
 
 const retryAfter = new Map<string, number>();
-// taskId -> when dev3 stops holding the merge-completion offer for the watching agent; `noticeAt` is set once the merged message was accepted.
-const mergeOfferHolds = new Map<string, { until: number; noticeAt?: number }>();
+// taskId -> when dev3 stops holding the merge-completion offer for the watching agent; `noticeText` is set once the merged message was accepted.
+const mergeOfferHolds = new Map<string, { until: number; noticeText?: string }>();
 // Two overlapping polls of one task (timer tick, popover refresh) must not both deliver.
 const inFlight = new Set<string>();
 // Tasks already warned about disagreeing remote refs; cleared when the refs agree again.
@@ -37,14 +40,17 @@ function agentCanReceive(task: Task): boolean {
 	return !task.hibernated && task.status !== "user-questions" && (task.sessionState?.panes?.length ?? 0) > 0;
 }
 
+/** The agent's prompt-submit hook is the proof the merged text reached it; without a hook the 10-minute cap applies. */
+export function releaseMergeOfferHoldOnSubmission(taskId: string, submitted: string): void {
+	const hold = mergeOfferHolds.get(taskId);
+	if (hold?.noticeText && submissionMatchesTypedText(submitted, hold.noticeText)) {
+		mergeOfferHolds.set(taskId, { until: Date.now() + MERGE_OFFER_SUBMITTED_GRACE_MS });
+	}
+}
+
 /** True while a watching agent should handle the merge before dev3 offers the user task completion. */
 export function mergeOfferHeld(task: Task, now = Date.now()): boolean {
 	const hold = mergeOfferHolds.get(task.id);
-	// The agent's prompt hook moves the card to in-progress and back, which resets statusEnteredAt: proof the agent took its turn.
-	if (hold?.noticeAt !== undefined && Date.parse(task.statusEnteredAt ?? "") > hold.noticeAt) {
-		mergeOfferHolds.delete(task.id);
-		return false;
-	}
 	const hasWatches = (task.prWatches?.length ?? 0) > 0;
 	if (hasWatches && agentCanReceive(task) && !hold) {
 		mergeOfferHolds.set(task.id, { until: now + MERGE_OFFER_WATCH_HOLD_MS });
@@ -197,13 +203,14 @@ async function deliverFired(project: Project, taskId: string, outcome: PrWatchOu
 		});
 		const remaining = [...new Set(settle(fresh.prWatches ?? []).filter((watch) => keys.includes(subscriberKey(watch))).map((watch) => watch.until))];
 		const notices = live.map(({ notice }) => notice);
+		let text: string;
 		try {
 			// Loaded on demand: the scheduler pulls in the whole prompt-delivery stack.
 			const { sendMessageImmediately } = await import("./scheduled-message-scheduler");
 			// The same tests the merge path uses to choose between an offer and a bare notice.
 			const noOffer = taskCompletesManually(fresh) || (await loadSettings()).suggestCompletingTasksAfterMerge === false;
 			const completion = noOffer ? "not-offered" : mergeCoversHead ? "offered" : "after-local-work";
-			const text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining, completion });
+			text = wrapPrStatusMessage({ prNumber, url: prUrl, notices, remaining, completion });
 			await sendMessageImmediately(fresh, text, { kind: "pane", paneId }, null, { subject: prStatusSubject(prNumber, notices), origin: "dev3" });
 		} catch (err) {
 			for (const key of keys) retryAfter.set(`${taskId}|${key}`, Date.now() + PR_WATCH_RETRY_BACKOFF_MS);
@@ -213,7 +220,7 @@ async function deliverFired(project: Project, taskId: string, outcome: PrWatchOu
 		for (const key of keys) retryAfter.delete(`${taskId}|${key}`);
 		if (notices.some(({ kind }) => kind === "merged")) {
 			const now = Date.now();
-			mergeOfferHolds.set(taskId, { until: now + MERGE_OFFER_WATCH_HOLD_MS, noticeAt: now });
+			mergeOfferHolds.set(taskId, { until: now + MERGE_OFFER_WATCH_HOLD_MS, noticeText: text });
 		}
 		await persistWatches(project, taskId, settle);
 	}

@@ -19,6 +19,7 @@ vi.mock("../git", () => ({
 }));
 vi.mock("../rpc-handlers/shared-pure", () => ({ getPushMessage: vi.fn(() => vi.fn()) }));
 vi.mock("../agent-message-log-watch", () => ({ noteLocalMessageLogAppend: vi.fn() }));
+vi.mock("../pr-watch-runner", () => ({ releaseMergeOfferHoldOnSubmission: vi.fn() }));
 vi.mock("../logger", () => ({
 	createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -30,6 +31,7 @@ import { TERMINAL_PROMPT_PREVIEW_MAX_CHARS } from "../../shared/agent-terminal-p
 import { messageLogDir, readAgentMessageLog, resetAgentMessageLogPruneState } from "../agent-message-log";
 import { noteDev3TypedPrompt, resetTypedPromptClaims } from "../agent-typed-prompt-claims";
 import { recordTerminalPromptSubmission, resetPromptSubmissionMemory } from "../agent-terminal-prompt-log";
+import { releaseMergeOfferHoldOnSubmission } from "../pr-watch-runner";
 
 const project = { id: "proj-1", name: "Proj", path: "/Users/x/repo" } as unknown as Project;
 const task = { id: "task-12345678", projectId: "proj-1", seq: 1848, title: "Worker" } as unknown as Task;
@@ -51,6 +53,7 @@ function rows() {
 }
 
 beforeEach(() => {
+	vi.mocked(releaseMergeOfferHoldOnSubmission).mockClear();
 	rmSync(messageLogDir(project), { recursive: true, force: true });
 	resetAgentMessageLogPruneState();
 	resetTypedPromptClaims();
@@ -215,5 +218,20 @@ describe("a prompt-submit hook and a stranded held message", () => {
 		const { pendingAgentMessageHoldCount } = await import("../agent-message-hold");
 		expect(pendingAgentMessageHoldCount()).toBe(1);
 		vi.useRealTimers();
+	});
+});
+
+describe("a prompt-submit hook and the merge-completion offer hold", () => {
+	it("hands every submission to the hold, even one that is only an envelope", () => {
+		const text = "<dev3-pr-status>\nPR #7 merged. Wrap up now.\n</dev3-pr-status>";
+		const burst = `<dev3-ai-message>peer</dev3-ai-message>\n\n${text}`;
+
+		expect(submit(burst)).toBe("envelope");
+		expect(submit(text)).toBe("machine-tagged");
+		expect(submit("a plain user prompt")).toBe("recorded");
+
+		expect(vi.mocked(releaseMergeOfferHoldOnSubmission).mock.calls).toEqual([
+			[task.id, burst], [task.id, text], [task.id, "a plain user prompt"],
+		]);
 	});
 });

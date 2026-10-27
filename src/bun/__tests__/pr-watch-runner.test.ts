@@ -20,12 +20,14 @@ import { liveAgentPaneIds, resolveScheduledMessageAuthorPane } from "../schedule
 import { sendMessageImmediately } from "../scheduled-message-scheduler";
 import { loadSettings } from "../settings";
 import {
+	MERGE_OFFER_SUBMITTED_GRACE_MS,
 	MERGE_OFFER_WATCH_HOLD_MS,
 	PR_WATCH_RETRY_BACKOFF_MS,
 	_resetPrWatchRunnerState,
 	addPrWatch,
 	clearPrWatches,
 	mergeOfferHeld,
+	releaseMergeOfferHoldOnSubmission,
 	runPrWatches,
 } from "../pr-watch-runner";
 
@@ -463,6 +465,7 @@ describe("the merge-completion offer hold", () => {
 	const minutes = (n: number) => n * 60_000;
 
 	it("starts when the merged message is accepted, even if it was only held, and lasts the full watch window", async () => {
+		vi.mocked(sendMessageImmediately).mockResolvedValue({ status: "held", spilledPath: null, messageId: "m" });
 		await runPrWatches(project, "t1", merged, URL, Date.now(), true);
 		const now = Date.now();
 
@@ -471,21 +474,33 @@ describe("the merge-completion offer hold", () => {
 		expect(mergeOfferHeld(withoutWatches(), now + MERGE_OFFER_WATCH_HOLD_MS + 1_000)).toBe(false);
 	});
 
-	it("ends at once when the card changed status after the notice", async () => {
+	async function deliverMerged() {
+		vi.mocked(sendMessageImmediately).mockResolvedValue({ status: "held", spilledPath: null, messageId: "m" });
 		await runPrWatches(project, "t1", merged, URL, Date.now(), true);
-		const later = new Date(Date.now() + 5_000).toISOString();
+		return vi.mocked(sendMessageImmediately).mock.calls[0][1];
+	}
 
-		expect(mergeOfferHeld({ ...withoutWatches(), statusEnteredAt: later } as Task, Date.now())).toBe(false);
-		expect(mergeOfferHeld(withoutWatches(), Date.now())).toBe(false);
+	it("keeps only a short grace after a submission that contains the merged text inside a burst", async () => {
+		const text = await deliverMerged();
+		releaseMergeOfferHoldOnSubmission("t1", `<dev3-ai-message>peer</dev3-ai-message>\n\n${text}`);
+		const now = Date.now();
+
+		expect(mergeOfferHeld(withoutWatches(), now + MERGE_OFFER_SUBMITTED_GRACE_MS - 1_000)).toBe(true);
+		expect(mergeOfferHeld(withoutWatches(), now + MERGE_OFFER_SUBMITTED_GRACE_MS + 1_000)).toBe(false);
 	});
 
-	it.each([
-		["earlier than the notice", new Date(Date.now() - minutes(1)).toISOString()],
-		["absent", undefined],
-	])("keeps holding when the status was entered %s", async (_label, statusEnteredAt) => {
-		await runPrWatches(project, "t1", merged, URL, Date.now(), true);
+	it("keeps holding over a submission of unrelated text and over a status change alone", async () => {
+		await deliverMerged();
+		releaseMergeOfferHoldOnSubmission("t1", "the user typed something else");
+		releaseMergeOfferHoldOnSubmission("other-task", "<dev3-pr-status>");
+		const later = new Date(Date.now() + 5_000).toISOString();
 
-		expect(mergeOfferHeld({ ...withoutWatches(), statusEnteredAt } as Task, Date.now())).toBe(true);
+		expect(mergeOfferHeld({ ...withoutWatches(), statusEnteredAt: later } as Task, Date.now() + minutes(9))).toBe(true);
+	});
+
+	it("ignores a submission when no merged notice was delivered", () => {
+		releaseMergeOfferHoldOnSubmission("t1", "<dev3-pr-status>anything");
+		expect(mergeOfferHeld(withoutWatches())).toBe(false);
 	});
 
 	it("gives a new subscription a fresh hold after the previous PR's expired", async () => {

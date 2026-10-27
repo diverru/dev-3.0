@@ -188,4 +188,54 @@ describe("describeTaskAgentAccounts", () => {
 		expect(rows[1].account).toEqual({ kind: "system", email: "codex-system@example.com" });
 		expect(describeTaskAgentAccounts(t, agents, accounts, { configDir: null, identity: null })[0].account).toEqual({ kind: "system", email: "system@example.com" });
 	});
+
+	it("does not assert the system identity while the project lookup is pending", () => {
+		const t = task({ accountId: null, sessionState: { panes: [pane({}), pane({ agentCmd: "codex", agentId: "builtin-codex", accountId: null })] } });
+		const rows = describeTaskAgentAccounts(t, agents, accounts, "pending");
+		expect(rows[0].account).toEqual({ kind: "unknown" });
+		expect(rows[1].account).toEqual({ kind: "system", email: "codex-system@example.com" });
+	});
+
+	describe("preset pin", () => {
+		const withEnv = (agent: CodingAgent, envVars: Record<string, string>): CodingAgent =>
+			({ ...agent, defaultConfigId: "cfg", configurations: [{ id: "cfg", name: "Cfg", envVars }] }) as CodingAgent;
+		const claudePinned = withEnv(claudeAgent, { CLAUDE_CONFIG_DIR: "/home/me/.claude-preset" });
+		const codexPinned = withEnv(codexAgent, { CODEX_HOME: "/home/me/.codex-preset" });
+		const claudePlain = withEnv(claudeAgent, { FOO: "1" });
+
+		it("reports the preset login for a claude config pinning CLAUDE_CONFIG_DIR, whatever the account id", () => {
+			const t = task({
+				accountId: "a1",
+				accountPick: { reason: { code: "only", short: null }, at: "x" },
+				sessionState: { panes: [pane({ configId: "cfg", accountId: "a1" })] },
+			});
+			const [row] = describeTaskAgentAccounts(t, [claudePinned], accounts);
+			expect(row.account).toEqual({ kind: "preset" });
+			expect(row.auto).toBe(false);
+			const [nullRow] = describeTaskAgentAccounts(
+				task({ sessionState: { panes: [pane({ configId: "cfg", accountId: null })] } }), [claudePinned], accounts, null,
+			);
+			expect(nullRow).toMatchObject({ account: { kind: "preset" }, onSystemClaude: false });
+		});
+
+		it("reports the preset login for a codex config pinning CODEX_HOME", () => {
+			const [row] = describeTaskAgentAccounts(
+				task({ sessionState: { panes: [pane({ agentCmd: "codex", agentId: "builtin-codex", configId: "cfg", accountId: "c1" })] } }),
+				[codexPinned], accounts,
+			);
+			expect(row.account).toEqual({ kind: "preset" });
+		});
+
+		it("leaves a config without the pin key unchanged", () => {
+			const [row] = describeTaskAgentAccounts(
+				task({ sessionState: { panes: [pane({ configId: "cfg", accountId: "a1" })] } }), [claudePlain], accounts,
+			);
+			expect(row.account).toMatchObject({ kind: "managed", label: "Work" });
+		});
+
+		it("uses task.configId for the synthetic row", () => {
+			const [row] = describeTaskAgentAccounts(task({ configId: "cfg", accountId: "a1" }), [claudePinned], accounts);
+			expect(row.account).toEqual({ kind: "preset" });
+		});
+	});
 });

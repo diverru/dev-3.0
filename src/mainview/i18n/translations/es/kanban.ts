@@ -420,6 +420,7 @@ const kanban = {
 	"taskAgents.title": "Agentes",
 	"taskAgents.systemLogin": "Inicio de sesión del sistema",
 	"taskAgents.projectLogin": "Inicio de sesión del proyecto",
+	"taskAgents.presetLogin": "Inicio de sesión del preset",
 	"taskAgents.deleted": "Cuenta eliminada",
 	"taskAgents.default": "Cuenta predeterminada",
 	"taskAgents.auto": "Auto",

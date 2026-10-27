@@ -2,11 +2,13 @@ import type { AgentAccountKind, AgentAccountsState, ProjectClaudeLogin } from ".
 import { AUTO_ACCOUNT_ID } from "../../shared/agent-accounts";
 import type { AgentFamily, CodingAgent, Task } from "../../shared/types";
 import { agentKey } from "../../shared/agent-adapters/families";
+import { resolveTaskAgentConfig } from "./taskAgentMeta";
 
 export type TaskAgentAccount =
 	| { kind: "managed"; label: string; email: string | null; api: boolean }
 	| { kind: "system"; email: string | null }
 	| { kind: "project"; email: string | null }
+	| { kind: "preset" }
 	| { kind: "deleted" }
 	| { kind: "default" }
 	| { kind: "unknown" };
@@ -25,23 +27,36 @@ interface Source {
 	key: number;
 	main: boolean;
 	agentId: string | null;
+	configId: string | null;
 	cmd: string;
 	family: AgentFamily | undefined;
 	accountId: string | null | undefined;
 }
 
+const PIN_ENV_KEY: Record<AgentAccountKind, string> = {
+	claude: "CLAUDE_CONFIG_DIR",
+	codex: "CODEX_HOME",
+	omp: "PI_CODING_AGENT_DIR",
+	pi: "PI_CODING_AGENT_DIR",
+};
+
 function resolveAccount(
 	kind: AgentAccountKind | null,
+	presetPinned: boolean,
 	id: string | null | undefined,
 	accounts: AgentAccountsState | null,
-	projectLogin: ProjectClaudeLogin | null,
+	projectLogin: ProjectClaudeLogin | null | "pending",
 ): TaskAgentAccount {
 	if (!kind) return { kind: "system", email: null };
+	if (presetPinned) return { kind: "preset" };
 	if (!accounts) return { kind: "unknown" };
 	if (id === AUTO_ACCOUNT_ID) return { kind: "unknown" };
 	if (id === undefined) return { kind: "default" };
 	if (id === null) {
-		if (kind === "claude" && projectLogin?.configDir) return { kind: "project", email: projectLogin.identity?.email ?? null };
+		if (kind === "claude") {
+			if (projectLogin === "pending") return { kind: "unknown" };
+			if (projectLogin?.configDir) return { kind: "project", email: projectLogin.identity?.email ?? null };
+		}
 		const identity =
 			kind === "claude" ? accounts.claude.systemIdentity : kind === "codex" ? accounts.codex.currentIdentity : null;
 		return { kind: "system", email: identity?.email ?? null };
@@ -60,7 +75,7 @@ export function describeTaskAgentAccounts(
 	task: Task,
 	agents: CodingAgent[],
 	accounts: AgentAccountsState | null,
-	projectLogin: ProjectClaudeLogin | null = null,
+	projectLogin: ProjectClaudeLogin | null | "pending" = null,
 ): TaskAgentAccountRow[] {
 	const panes = task.sessionState?.panes ?? [];
 	const sources: Source[] = panes.flatMap((p, i) =>
@@ -70,6 +85,7 @@ export function describeTaskAgentAccounts(
 				key: i,
 				main: i === 0,
 				agentId: p.agentId,
+				configId: p.configId,
 				cmd: p.agentCmd,
 				family: p.agentFamily ?? agents.find((a) => a.id === p.agentId)?.agentFamily,
 				accountId: p.accountId !== undefined ? p.accountId : i === 0 ? task.accountId : undefined,
@@ -81,6 +97,7 @@ export function describeTaskAgentAccounts(
 			key: 0,
 			main: true,
 			agentId: task.agentId,
+			configId: task.configId ?? null,
 			cmd: agent?.baseCommand ?? "",
 			family: agent?.agentFamily,
 			accountId: task.accountId,
@@ -91,16 +108,19 @@ export function describeTaskAgentAccounts(
 		const agent = agents.find((a) => a.id === s.agentId) ?? null;
 		const cmdName = s.cmd.trim().split(/\s+/)[0]?.split("/").pop() ?? "";
 		const kind = accountKindOf(agentKey(s.cmd, s.family));
+		const presetPinned =
+			!!kind && !!resolveTaskAgentConfig(agent, s.configId)?.envVars?.[PIN_ENV_KEY[kind]];
 		const auto =
-			s.accountId === AUTO_ACCOUNT_ID ||
-			(s.main && !!task.accountPick && s.accountId !== undefined && s.accountId === task.accountId);
+			!presetPinned &&
+			(s.accountId === AUTO_ACCOUNT_ID ||
+			(s.main && !!task.accountPick && s.accountId !== undefined && s.accountId === task.accountId));
 		return {
 			key: s.key,
 			agent,
 			agentName: agent?.name ?? cmdName,
-			account: resolveAccount(kind, s.accountId, accounts, projectLogin),
+			account: resolveAccount(kind, presetPinned, s.accountId, accounts, projectLogin),
 			auto,
-			onSystemClaude: kind === "claude" && s.accountId === null,
+			onSystemClaude: kind === "claude" && !presetPinned && s.accountId === null,
 		};
 	});
 }

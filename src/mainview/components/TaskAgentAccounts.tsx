@@ -16,9 +16,10 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 	const streamer = useStreamerMode();
 	const accounts = useAgentAccountsState(true);
 	const needsProjectLogin = describeTaskAgentAccounts(task, agents, null).some((r) => r.onSystemClaude);
-	const [projectLogin, setProjectLogin] = useState<ProjectClaudeLogin | null>(null);
+	const [projectLogin, setProjectLogin] = useState<ProjectClaudeLogin | null | "pending">("pending");
 	useEffect(() => {
 		if (!needsProjectLogin) return;
+		setProjectLogin("pending");
 		let cancelled = false;
 		api.request
 			.getProjectClaudeLogin({ projectId: task.projectId })
@@ -26,7 +27,7 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 			.catch(() => {});
 		return () => { cancelled = true; };
 	}, [needsProjectLogin, task.projectId]);
-	const rows = describeTaskAgentAccounts(task, agents, accounts, projectLogin);
+	const rows = describeTaskAgentAccounts(task, agents, accounts, needsProjectLogin ? projectLogin : null);
 	if (rows.length === 0) return null;
 
 	return (
@@ -43,6 +44,9 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 					)}
 					{account.kind === "project" && (
 						<span className="flex-shrink-0 text-fg-2">{t("taskAgents.projectLogin")}</span>
+					)}
+					{account.kind === "preset" && (
+						<span className="flex-shrink-0 text-fg-2">{t("taskAgents.presetLogin")}</span>
 					)}
 					{account.kind === "deleted" && (
 						<span className="text-fg-3 italic">{t("taskAgents.deleted")}</span>

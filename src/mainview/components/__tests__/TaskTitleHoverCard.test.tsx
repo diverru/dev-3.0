@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TaskTitleHoverCard from "../TaskTitleHoverCard";
 import { I18nProvider } from "../../i18n";
+import { api } from "../../rpc";
 import type { CodingAgent, Task } from "../../../shared/types";
 
 vi.mock("../../rpc", () => ({
@@ -17,7 +18,7 @@ vi.mock("../../rpc", () => ({
 					accounts: [{ id: "a1", kind: "claude", label: "Work", identity: { email: "work@example.com" }, auth: "api", api: null, createdAt: 0 }],
 					activeId: null,
 					systemConfigDir: "/home/me/.claude",
-					systemIdentity: null,
+					systemIdentity: { email: "system@example.com", organization: null, plan: null, planLabel: null, accountId: null },
 				},
 				codex: { accounts: [], activeId: null, currentIdentity: null },
 				omp: { accounts: [], activeId: null },
@@ -78,5 +79,28 @@ describe("TaskTitleHoverCard — agents row", () => {
 		await userEvent.setup().hover(screen.getByText("trigger"));
 		expect(await screen.findByText("Project login")).toBeTruthy();
 		expect(await screen.findByText("proj@example.com")).toBeTruthy();
+	});
+
+	it("shows no system email while the project lookup is pending, then the project email", async () => {
+		let resolve!: (v: unknown) => void;
+		vi.mocked(api.request.getProjectClaudeLogin).mockReturnValueOnce(new Promise((r) => { resolve = r; }) as never);
+		renderCard({ agentId: "builtin-claude", accountId: null });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		await screen.findByText("Claude Code");
+		await waitFor(() => expect(api.request.listAgentAccounts).toHaveBeenCalled());
+		await new Promise((r) => setTimeout(r, 20));
+		expect(screen.queryByText("system@example.com")).toBeNull();
+		expect(screen.queryByText("System login")).toBeNull();
+		resolve({ configDir: "/home/me/.claude-proj", identity: { email: "proj@example.com", organization: null, plan: null, planLabel: null, accountId: null } });
+		expect(await screen.findByText("proj@example.com")).toBeTruthy();
+	});
+
+	it("keeps hiding the system email when the project lookup fails", async () => {
+		vi.mocked(api.request.getProjectClaudeLogin).mockRejectedValueOnce(new Error("boom"));
+		renderCard({ agentId: "builtin-claude", accountId: null });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		await screen.findByText("Claude Code");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(screen.queryByText("system@example.com")).toBeNull();
 	});
 });

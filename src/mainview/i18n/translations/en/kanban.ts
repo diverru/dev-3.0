@@ -421,6 +421,7 @@ const kanban = {
 	"taskAgents.title": "Agents",
 	"taskAgents.systemLogin": "System login",
 	"taskAgents.projectLogin": "Project login",
+	"taskAgents.presetLogin": "Preset login",
 	"taskAgents.deleted": "Deleted account",
 	"taskAgents.default": "Default account",
 	"taskAgents.auto": "Auto",

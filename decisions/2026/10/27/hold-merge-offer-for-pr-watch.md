@@ -10,7 +10,7 @@ dev3 stays the single owner of the offer and only delays it. `mergeOfferHeld` (`
 
 ## Risks
 
-The hold is in memory: after an app restart the offer comes at once. An agent that never takes the message (dead pane that still looks alive, text held forever) delays the offer by up to 10 minutes. Harnesses without a prompt-submit hook (only Claude, Codex and Copilot report submissions) always wait the full 10 minutes, as does a task whose pane is owned by a second dev3 process. A long agent turn delays the offer for its whole length, since in-progress is never offered.
+The hold is in memory: after an app restart the offer comes at once. An agent that never takes the message (dead pane that still looks alive, text held forever) delays the offer by up to 10 minutes. Harnesses whose hooks do not report prompt submissions to dev3 always wait the full 10 minutes, as does a task whose pane is owned by a second dev3 process. A long agent turn delays the offer for its whole length, since in-progress is never offered.
 
 ## Alternatives considered
 

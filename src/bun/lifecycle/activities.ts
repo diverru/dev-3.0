@@ -523,12 +523,13 @@ export async function reportTaskPrStatus(
 	if (task.prWatches?.length) {
 		try {
 			const headRefOid = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-			await runPrWatches(project, task.id, { number: prNumber, state: mergeState.state, headRefOid, checks }, prUrl ?? "", checkedAt, mergeCoversHead);
+			await runPrWatches(project, task.id, { number: prNumber, state: mergeState.state, headRefOid, checks }, prUrl ?? "", checkedAt, mergeCoversHead === true);
 		} catch (err) {
 			log.warn("PR watch evaluation failed", { taskId: task.id.slice(0, 8), error: String(err) });
 		}
 	}
-	if (mergeCoversHead && !mergeOfferHeld(task)) {
+	// Fresh read: the poll's snapshot may predate a watch added since.
+	if (mergeCoversHead && !mergeOfferHeld(await data.getTask(project, task.id))) {
 		const fingerprint = await getMergeCompletionFingerprint(task, branchName);
 		await dispatchLifecycleFinding(project, task, {
 			type: "mergeDetected",

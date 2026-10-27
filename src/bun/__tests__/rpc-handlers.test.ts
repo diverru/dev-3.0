@@ -6405,7 +6405,7 @@ describe("handlers.getBranchStatus", () => {
 		vi.mocked(runPrWatches).mockClear();
 		await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
 		expect(push).toHaveBeenCalledWith("taskPrStatus", expect.objectContaining({ ciStatus: "success" }));
-		expect(runPrWatches).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ number: 42 }), task.prUrl, 1234, undefined);
+		expect(runPrWatches).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ number: 42 }), task.prUrl, 1234, false);
 		vi.mocked(data.updateTask).mockClear(); push.mockClear();
 		await handlers.getBranchStatus({ taskId: task.id, projectId: project.id });
 		expect(data.updateTask).not.toHaveBeenCalled();
@@ -12464,7 +12464,7 @@ describe("checkOpenPRsForPromotion", () => {
 			{ number: 42, state: "OPEN", headRefOid: "def", checks: [{ ...checks[0], detailsUrl: null }] },
 			"https://github.com/a/b/pull/42",
 			1234,
-			undefined,
+			false,
 		);
 	});
 
@@ -12510,6 +12510,41 @@ describe("checkOpenPRsForPromotion", () => {
 			await checkOpenPRsForPromotion();
 
 			expect(runPrWatches).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), false);
+		});
+
+		it("tells the runner a merged historical PR of another branch covers nothing", async () => {
+			setup(watched);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ state: "MERGED", headRefName: "earlier/branch" }));
+
+			await checkOpenPRsForPromotion();
+
+			expect(runPrWatches).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), false);
+		});
+
+		it("checks the hold against a fresh read of the task, not the poll's snapshot", async () => {
+			const { task } = setup({ prNumber: 42 });
+			vi.mocked(data.getTask).mockResolvedValue({ ...task, ...watched } as Task);
+			vi.mocked(mergeOfferHeld).mockImplementation((t) => (t.prWatches?.length ?? 0) > 0);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ state: "MERGED" }));
+			const push = vi.fn(); setPushMessage(push);
+
+			await checkOpenPRsForPromotion();
+
+			expect(push).not.toHaveBeenCalledWith("branchMerged", expect.anything());
+		});
+
+		it("holds the offer through the real hold for a watched task with a receivable agent", async () => {
+			const actual = await vi.importActual<typeof import("../pr-watch-runner")>("../pr-watch-runner");
+			actual._resetPrWatchRunnerState();
+			vi.mocked(mergeOfferHeld).mockImplementation(actual.mergeOfferHeld);
+			setup({ ...watched, sessionState: { panes: [{ id: "%1" }] } } as unknown as Partial<Task>);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ state: "MERGED" }));
+			const push = vi.fn(); setPushMessage(push);
+
+			await checkOpenPRsForPromotion();
+
+			expect(push).not.toHaveBeenCalledWith("branchMerged", expect.anything());
+			actual._resetPrWatchRunnerState();
 		});
 
 		it("offers an unwatched merged PR at once", async () => {

@@ -12,12 +12,10 @@ export const PR_WATCH_RETRY_BACKOFF_MS = 5 * 60_000;
 
 /** Longest hold on the merge-completion offer while a watch has not delivered yet (dead or stuck agent). */
 export const MERGE_OFFER_WATCH_HOLD_MS = 10 * 60_000;
-/** Hold after the merged message was typed, until the agent's prompt hook moves the card to in-progress. */
-export const MERGE_OFFER_AFTER_NOTICE_HOLD_MS = 2 * 60_000;
 
 const retryAfter = new Map<string, number>();
-// taskId -> epoch ms until which dev3 keeps the merge-completion offer back for the watching agent.
-const mergeOfferHoldUntil = new Map<string, number>();
+// taskId -> when dev3 stops holding the merge-completion offer for the watching agent; `noticeAt` is set once the merged message was accepted.
+const mergeOfferHolds = new Map<string, { until: number; noticeAt?: number }>();
 // Two overlapping polls of one task (timer tick, popover refresh) must not both deliver.
 const inFlight = new Set<string>();
 // Tasks already warned about disagreeing remote refs; cleared when the refs agree again.
@@ -25,7 +23,7 @@ const ambiguousWarned = new Set<string>();
 
 export function _resetPrWatchRunnerState(): void {
 	retryAfter.clear();
-	mergeOfferHoldUntil.clear();
+	mergeOfferHolds.clear();
 	inFlight.clear();
 	ambiguousWarned.clear();
 }
@@ -41,13 +39,19 @@ function agentCanReceive(task: Task): boolean {
 
 /** True while a watching agent should handle the merge before dev3 offers the user task completion. */
 export function mergeOfferHeld(task: Task, now = Date.now()): boolean {
-	const hasWatches = (task.prWatches?.length ?? 0) > 0;
-	if (hasWatches && agentCanReceive(task) && !mergeOfferHoldUntil.has(task.id)) {
-		mergeOfferHoldUntil.set(task.id, now + MERGE_OFFER_WATCH_HOLD_MS);
+	const hold = mergeOfferHolds.get(task.id);
+	// The agent's prompt hook moves the card to in-progress and back, which resets statusEnteredAt: proof the agent took its turn.
+	if (hold?.noticeAt !== undefined && Date.parse(task.statusEnteredAt ?? "") > hold.noticeAt) {
+		mergeOfferHolds.delete(task.id);
+		return false;
 	}
-	const until = mergeOfferHoldUntil.get(task.id) ?? 0;
-	if (!hasWatches && until <= now) mergeOfferHoldUntil.delete(task.id);
-	return until > now;
+	const hasWatches = (task.prWatches?.length ?? 0) > 0;
+	if (hasWatches && agentCanReceive(task) && !hold) {
+		mergeOfferHolds.set(task.id, { until: now + MERGE_OFFER_WATCH_HOLD_MS });
+		return true;
+	}
+	if (!hasWatches && hold && hold.until <= now) mergeOfferHolds.delete(task.id);
+	return (hold?.until ?? 0) > now;
 }
 
 async function persistWatches(project: Project, taskId: string, change: (current: PrWatch[], task: Task) => PrWatch[]): Promise<Task> {
@@ -60,11 +64,14 @@ async function persistWatches(project: Project, taskId: string, change: (current
 }
 
 export async function addPrWatch(project: Project, taskId: string, watch: PrWatch): Promise<Task> {
-	return persistWatches(project, taskId, (current, task) => {
+	const task = await persistWatches(project, taskId, (current, task) => {
 		// The task may have ended while the subscribe handler waited on gh and ps.
 		if (isTerminal(task)) throw new Error("The task has finished; there is nothing left to watch for.");
 		return upsertPrWatch(current, watch);
 	});
+	// A new subscription is a new merge cycle: an old hold must not block its offer.
+	mergeOfferHolds.delete(taskId);
+	return task;
 }
 
 /** Remove every watch of the task; returns how many there were. */
@@ -83,7 +90,7 @@ export async function clearPrWatches(project: Project, taskId: string): Promise<
  * message was accepted: an agent that cannot be reached keeps its watch and hears
  * about it on a later poll.
  */
-export async function runPrWatches(project: Project, taskId: string, sample: PrWatchSample, prUrl: string, checkedAt: number, mergeCoversHead = true): Promise<void> {
+export async function runPrWatches(project: Project, taskId: string, sample: PrWatchSample, prUrl: string, checkedAt: number, mergeCoversHead: boolean): Promise<void> {
 	if (inFlight.has(taskId)) return;
 	inFlight.add(taskId);
 	try {
@@ -205,7 +212,8 @@ async function deliverFired(project: Project, taskId: string, outcome: PrWatchOu
 		}
 		for (const key of keys) retryAfter.delete(`${taskId}|${key}`);
 		if (notices.some(({ kind }) => kind === "merged")) {
-			mergeOfferHoldUntil.set(taskId, Date.now() + MERGE_OFFER_AFTER_NOTICE_HOLD_MS);
+			const now = Date.now();
+			mergeOfferHolds.set(taskId, { until: now + MERGE_OFFER_WATCH_HOLD_MS, noticeAt: now });
 		}
 		await persistWatches(project, taskId, settle);
 	}

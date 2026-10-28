@@ -671,6 +671,9 @@ describe("createWorktree", () => {
 		});
 
 		it("gives up after the attempt cap when the config lock is never released", async () => {
+			// Every attempt is ~4 real git processes: with the default cap a loaded runner hits
+			// the time budget first (6 of 8 seen on CI). Backoff is not what this test proves.
+			_setWorktreeAddRetryPolicy({ attempts: 3, baseDelayMs: 0, maxDelayMs: 0, budgetMs: 60_000 });
 			const project = makeProject(repo.local);
 			const task = makeTask({ id: "bcbcbcbc-cdcd-efef-0101-232323232323" });
 			const lockPath = join(repo.local, ".git", "config.lock");
@@ -680,15 +683,15 @@ describe("createWorktree", () => {
 			try {
 				const error = await createWorktree(project, task).then(() => null, (err: Error) => err);
 				expect(error?.message).toMatch(/could not lock config file/);
-				expect(error?.message).toMatch(/gave up after 8 attempts over \d+\.\ds/);
-				expect(addsSince(before)).toHaveLength(8);
+				expect(error?.message).toMatch(/gave up after 3 attempts over \d+\.\ds/);
+				expect(addsSince(before)).toHaveLength(3);
 				// dev3 waits for somebody else's lock; it never removes it.
 				expect(existsSync(lockPath)).toBe(true);
 			} finally {
 				rmSync(lockPath, { force: true });
 				g("git branch -D dev3/task-bcbcbcbc", repo.local);
 			}
-		}, 20_000);
+		});
 
 		it("stops at the time budget before the attempt cap", async () => {
 			_setWorktreeAddRetryPolicy({ baseDelayMs: 200, maxDelayMs: 200, budgetMs: 350 });
@@ -701,8 +704,9 @@ describe("createWorktree", () => {
 			try {
 				await expect(createWorktree(project, task)).rejects.toThrow(/could not lock config file/);
 				const adds = addsSince(before).length;
-				expect(adds).toBeGreaterThanOrEqual(2);
-				expect(adds).toBeLessThan(8);
+				// A 200ms wait never fits a 350ms budget twice; a slow first attempt may not fit it once.
+				expect(adds).toBeGreaterThanOrEqual(1);
+				expect(adds).toBeLessThanOrEqual(2);
 			} finally {
 				rmSync(lockPath, { force: true });
 				g("git branch -D dev3/task-cdcdcdcd", repo.local);

@@ -12,6 +12,7 @@ import { assertLaunchAgentsInstalled } from "../../agent-launch-availability";
 import { ensureArtifactTemplateEnv } from "../../artifact-template";
 import { taskSessionName } from "../../tmux";
 import { dev3TaskTempPath } from "../../temp-paths";
+import { writeNativeAgentAttribution } from "../../native-agent-attribution";
 import { taskTerminalBackendIdentity } from "../../task-terminal-backend";
 import { focusNativeTaskPane, nativeTaskPaneLayout, nativeTaskPanesState, setNativeTaskPaneLayout } from "../../native-task-panes";
 import { setSplitRatio, splitCreatedBySplitting } from "../../../shared/split-tree";
@@ -195,6 +196,14 @@ async function spawnSingleBugHunterPane(opts: {
 		} catch (err) {
 			log.error("Failed to append bug hunter pane to sessionState (non-fatal)", { error: String(err) });
 		}
+	} else {
+		await writeNativeAgentAttribution(scriptPath, {
+			agentCmd: resolvedBaseCmd,
+			agentId: launchedAgentId,
+			configId: launchedConfigId,
+			accountId: launchAccountId,
+			agentFamily: resolvedAgentFamily,
+		});
 	}
 
 	return { handle, baseCmd: resolvedBaseCmd, agentFamily: resolvedAgentFamily };

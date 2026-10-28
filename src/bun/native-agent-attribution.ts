@@ -31,14 +31,14 @@ async function readAttribution(scriptPath: string): Promise<NativeAgentAttributi
 	}
 }
 
-/** Alive "+ Agent" panes of a native task, matched by their spawn script path. */
+/** Alive "+ Agent" and bug-hunter panes of a native task, matched by their launch script path. */
 export async function listNativeTaskAgents(task: Task): Promise<NativeTaskAgent[]> {
 	try {
 		if (taskTerminalBackendIdentity(task) !== "native") return [];
-		const prefix = dev3TaskTempPath(task.id, "spawn-");
+		const prefixes = ["spawn-", "bughunt-"].map((kind) => dev3TaskTempPath(task.id, kind));
 		const agents: NativeTaskAgent[] = [];
 		for (const pane of await nativeTaskPaneCommands(task.id)) {
-			const scriptPath = pane.alive ? pane.command.find((arg) => arg.startsWith(prefix)) : undefined;
+			const scriptPath = pane.alive ? pane.command.find((arg) => prefixes.some((prefix) => arg.startsWith(prefix))) : undefined;
 			const attribution = scriptPath ? await readAttribution(scriptPath) : null;
 			if (attribution) agents.push({ ...attribution, paneId: pane.paneId });
 		}

@@ -4,6 +4,7 @@ import type { Project, Task } from "../../../shared/types";
 import { api } from "../../rpc";
 import { useT } from "../../i18n";
 import { toast } from "../../toast";
+import { requestTaskTerminalFocus } from "../../terminal-focus-request";
 import Tooltip from "../Tooltip";
 
 /**
@@ -26,6 +27,8 @@ export function useYaziLauncher(task: Task | undefined, project: Project | undef
 				setInstallCmd((result as { installCommand?: string }).installCommand ?? "");
 				setLinuxHint(!!(result as { linuxHint?: boolean }).linuxHint);
 				setInstallPopup(true);
+			} else {
+				requestTaskTerminalFocus(task.id);
 			}
 		} catch (err) {
 			toast.error(t("infoPanel.fileBrowserFailed", { error: String(err) }), { taskId: task.id });

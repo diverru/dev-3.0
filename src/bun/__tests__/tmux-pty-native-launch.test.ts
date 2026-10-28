@@ -643,6 +643,32 @@ describe("setup-script wrapper — one flavour per backend", () => {
 		expect(pty.destroySessionAwaited).not.toHaveBeenCalled();
 	});
 
+	describe("Open in Yazi on a tmux task", () => {
+		beforeEach(() => {
+			vi.mocked(data.getProject).mockResolvedValue(makeProject());
+			vi.mocked(data.getTask).mockResolvedValue(makeTask());
+		});
+
+		it("answers with the install hint when yazi is missing, and splits nothing", async () => {
+			vi.mocked(which).mockResolvedValueOnce(null);
+
+			await expect(tmuxPtyHandlers.openFileBrowser({ taskId: TASK_ID, projectId: "proj-1" }))
+				.resolves.toMatchObject({ notInstalled: true, installCommand: expect.stringContaining("yazi") });
+			expect(tmux.splitWindow).not.toHaveBeenCalled();
+		});
+
+		it("splits the task session running yazi when it is installed", async () => {
+			await tmuxPtyHandlers.openFileBrowser({ taskId: TASK_ID, projectId: "proj-1" });
+
+			expect(tmux.splitWindow).toHaveBeenCalledWith(expect.objectContaining({
+				target: `dev3-${TASK_ID.slice(0, 8)}`,
+				command: "yazi",
+				cwd: WORKTREE,
+			}));
+			expect(vi.mocked(auxPanes.openAuxPane)).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("Open in Yazi", () => {
 		const nativeTask = () => makeTask({ terminalBackend: "native" });
 		beforeEach(() => {

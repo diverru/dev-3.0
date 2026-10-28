@@ -410,7 +410,8 @@ async function findOwnedPanesStrictly(
  *
  * On native, focus is handed back to the pane that had it — a new pane becomes
  * the coordinator's active pane on split, and the agent must not lose input just
- * because a dev server started.
+ * because a dev server started. `focusNewPane` keeps it on the new pane instead,
+ * for an interactive pane the user opened to type into.
  */
 export async function openAuxPane(spec: OpenAuxPaneSpec): Promise<AuxPaneHandle> {
 	const { task, purpose, socket, slot } = spec;

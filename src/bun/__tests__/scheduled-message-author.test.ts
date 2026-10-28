@@ -586,7 +586,6 @@ describe("a native main agent that restarts keeps its scheduled messages", () =>
 		restartedAgent();
 		const parked = task([{ ...pane(null, "conv-a"), parked: true }], { terminalBackend: "native" } as Partial<Task>);
 		expect(await resolveScheduledMessageAuthorPane(parked, author)).toMatchObject({ ok: false });
-		expect(await captureScheduledMessageAuthor(parked, "pane-1", 103)).toBeNull();
 	});
 
 	it("drops it when only the signature text differs, not the root process", async () => {

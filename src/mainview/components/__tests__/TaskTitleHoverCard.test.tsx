@@ -145,6 +145,6 @@ describe("TaskTitleHoverCard — agents row", () => {
 	it("shows the default account when no account was recorded", async () => {
 		renderCard({ agentId: "builtin-claude" });
 		await userEvent.setup().hover(screen.getByText("trigger"));
-		expect(await screen.findByText("Default account")).toBeTruthy();
+		expect(await screen.findByText("Default login")).toBeTruthy();
 	});
 });

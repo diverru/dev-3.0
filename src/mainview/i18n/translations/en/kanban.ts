@@ -423,7 +423,7 @@ const kanban = {
 	"taskAgents.projectLogin": "Project login",
 	"taskAgents.presetLogin": "Preset login",
 	"taskAgents.deleted": "Deleted account",
-	"taskAgents.default": "Default account",
+	"taskAgents.default": "Default login",
 	"taskAgents.auto": "Auto",
 	"taskAgents.api": "API",
 	"task.watchTooltip": "Watch — notify on status changes",

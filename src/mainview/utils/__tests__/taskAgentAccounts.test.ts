@@ -280,11 +280,11 @@ describe("describeTaskAgentAccounts", () => {
 		const ompAgent = { id: "builtin-omp", name: "Omp", baseCommand: "omp", configurations: [] } as CodingAgent;
 		const piAgent = { id: "builtin-pi", name: "Pi", baseCommand: "pi", configurations: [] } as CodingAgent;
 		it.each([
-			[claudeAgent, "claude", "CLAUDE_CONFIG_DIR"],
-			[codexAgent, "codex", "CODEX_HOME"],
-			[ompAgent, "omp", "PI_CODING_AGENT_DIR"],
-			[piAgent, "pi", "PI_CODING_AGENT_DIR"],
-		])("reports the preset login for a %# config pinning %s's home (%s)", (agent, cmd, envKey) => {
+			["claude", "CLAUDE_CONFIG_DIR", claudeAgent],
+			["codex", "CODEX_HOME", codexAgent],
+			["omp", "PI_CODING_AGENT_DIR", ompAgent],
+			["pi", "PI_CODING_AGENT_DIR", piAgent],
+		])("reports the preset login for a %s config pinning %s", (cmd, envKey, agent) => {
 			const pinned = withEnv(agent, { [envKey]: "/home/me/.preset" });
 			const [row] = describeTaskAgentAccounts(
 				task({ sessionState: { panes: [pane({ agentCmd: cmd, agentId: agent.id, configId: "cfg", accountId: "c1" })] } }), [pinned], accounts,

@@ -422,7 +422,7 @@ const kanban = {
 	"taskAgents.projectLogin": "Sesión del proyecto",
 	"taskAgents.presetLogin": "Sesión del preset",
 	"taskAgents.deleted": "Cuenta eliminada",
-	"taskAgents.default": "Inicio de sesión predeterminado",
+	"taskAgents.default": "Sesión predeterminada",
 	"taskAgents.auto": "Auto",
 	"taskAgents.api": "API",
 	"task.watchTooltip": "Vigilar — notificar al cambiar estado",

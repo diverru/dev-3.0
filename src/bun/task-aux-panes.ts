@@ -51,7 +51,7 @@ import { createLogger } from "./logger";
 const log = createLogger("task-aux-panes");
 
 /** Which action owns the pane. One live pane per purpose per task, at most. */
-export type AuxPanePurpose = "devServer" | "gitOp" | "columnAgent" | "setupRerun";
+export type AuxPanePurpose = "devServer" | "gitOp" | "columnAgent" | "setupRerun" | "fileBrowser";
 
 /** Where the new pane lands relative to the pane it splits off. */
 export type AuxPanePlacement = "right" | "below";
@@ -89,6 +89,8 @@ export interface OpenAuxPaneSpec extends TaskPaneLaunch {
 	slot?: string;
 	/** Native pane to split off. Defaults to the pane that currently has focus. */
 	nativeAnchor?: string;
+	/** Native: leave focus on the new pane, as a tmux split does, instead of handing it back. */
+	focusNewPane?: boolean;
 }
 
 /**
@@ -144,6 +146,7 @@ const AUX_PANE_PURPOSES: Record<AuxPanePurpose, AuxPanePurposeMeta> = {
 	gitOp: { scriptSuffix: "git-", title: "Git", provenReplace: false },
 	columnAgent: { scriptSuffix: "col-agent", title: "Column Agent", provenReplace: true },
 	setupRerun: { scriptSuffix: "setup-rerun", title: "Setup", provenReplace: false },
+	fileBrowser: { scriptSuffix: "yazi", title: "Files", provenReplace: false },
 };
 
 /**
@@ -416,7 +419,7 @@ export async function openAuxPane(spec: OpenAuxPaneSpec): Promise<AuxPaneHandle>
 	} else {
 		await closeAuxPane(task, purpose, socket, undefined, slot);
 	}
-	const handle = await splitTaskPane({ ...spec, restoreFocus: true });
+	const handle = await splitTaskPane({ ...spec, restoreFocus: !spec.focusNewPane });
 	log.info("Opened auxiliary pane", {
 		taskId: task.id.slice(0, 8),
 		purpose,

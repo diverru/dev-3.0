@@ -8,11 +8,13 @@ import * as repoConfig from "../../repo-config";
 import { getPortsForTask } from "../../port-scanner";
 import { throughputSnapshot } from "../../pty-throughput";
 import { getUserShell } from "../../shell-env";
-import { spawn } from "../../spawn";
+import { which } from "../../which";
 import { tmux, DEFAULT_TMUX_SOCKET, TmuxError, taskSessionName, PANE_CURRENT_COMMAND_FORMAT } from "../../tmux";
 import { taskTerminalBackendIdentity } from "../../task-terminal-backend";
 import { nativeTaskPanesAlive } from "../../native-task-panes";
-import { buildProjectTerminalEnv, isActive, log } from "../shared-pure";
+import { auxPaneAlive, auxPaneTitle, closeAuxPane, openAuxPane } from "../../task-aux-panes";
+import { dev3TaskTempPath } from "../../temp-paths";
+import { buildProjectTerminalEnv, buildTaskLifecycleEnv, generatedScriptLaunch, generatedScriptName, isActive, log, writeLaunchScript } from "../shared-pure";
 import { sessionStateOrLostCodexPane } from "./resume";
 import { launchTaskPty } from "./task-launch";
 import { fileBrowserPaneIds, findTaskAcrossProjects, markTerminalAttached } from "./task-state";
@@ -20,9 +22,7 @@ import { fileBrowserPaneIds, findTaskAcrossProjects, markTerminalAttached } from
 export async function openFileBrowser(params: { taskId: string; projectId: string }): Promise<{ notInstalled: true; installCommand: string; linuxHint?: boolean } | void> {
 	log.info("→ openFileBrowser", params);
 	try {
-		const yaziCheckProc = spawn(["which", "yazi"], { stdout: "pipe", stderr: "pipe" });
-		const yaziCheckExit = await yaziCheckProc.exited;
-		if (yaziCheckExit !== 0) {
+		if (!(await which("yazi"))) {
 			const brewCmd = "brew install yazi ffmpegthumbnailer sevenzip jq poppler fd ripgrep fzf zoxide imagemagick chafa";
 			const installCommand = process.platform === "win32"
 				? "scoop install yazi ffmpeg 7zip jq poppler fd ripgrep fzf zoxide imagemagick chafa"
@@ -37,8 +37,31 @@ export async function openFileBrowser(params: { taskId: string; projectId: strin
 		if (!task.worktreePath) throw new Error("Task has no worktree");
 		assertTaskWorkspacePresent(project, task.worktreePath);
 
-		const tmuxSession = taskSessionName(task.id);
 		const socket = task.tmuxSocket ?? DEFAULT_TMUX_SOCKET;
+		if (taskTerminalBackendIdentity(task) === "native") {
+			if (await auxPaneAlive(task, "fileBrowser", socket)) {
+				await closeAuxPane(task, "fileBrowser", socket);
+				return;
+			}
+			const scriptPath = dev3TaskTempPath(task.id, generatedScriptName("yazi"));
+			await writeLaunchScript(scriptPath, "yazi\n");
+			// A pane left dead after yazi quits stays until the next toggle sweeps it.
+			await openAuxPane({
+				task,
+				purpose: "fileBrowser",
+				focusNewPane: true,
+				placement: "below",
+				size: "30%",
+				cwd: task.worktreePath,
+				env: buildTaskLifecycleEnv(project, task, task.worktreePath),
+				socket,
+				title: auxPaneTitle("fileBrowser"),
+				tmuxCommand: "yazi",
+				nativeLaunch: generatedScriptLaunch(scriptPath),
+			});
+			return;
+		}
+		const tmuxSession = taskSessionName(task.id);
 		const existingPane = fileBrowserPaneIds.get(task.id);
 		if (existingPane) {
 			await tmux.killPane(existingPane, { socket, bestEffort: true });

@@ -30,6 +30,7 @@ import { openAuxPane } from "../../task-aux-panes";
 import { getPushMessage, AGENT_ENV_DEFAULTS, buildAgentEnv, buildAgentRetryWrapper, buildCmdScript, buildModelVersionGateWrapper, buildSetupStartupWrapper, buildScriptRunnerCommand, buildTaskLifecycleEnv, withResolvedCodexBinary, agentExitReportArgv, generatedScriptLaunch, generatedScriptName, log, writeLaunchScript } from "../shared-pure";
 import { launchDialect } from "../../../shared/platform-launch";
 import { devViewerPaneIds, setTmuxSessionPortEnv } from "./dev-servers";
+import { dev3ShellPromptEnv } from "../../shell-init";
 import { fileBrowserPaneIds, findTaskAcrossProjects } from "./task-state";
 
 const MAIN_AGENT_PANE_CAPTURE_ATTEMPTS = 10;
@@ -198,9 +199,10 @@ async function launchNativeTaskSession(
 	task: Task,
 	worktreePath: string,
 	runScriptPath: string,
-	env: Record<string, string>,
+	taskEnv: Record<string, string>,
 	userShell: string,
 ): Promise<void> {
+	const env = { ...dev3ShellPromptEnv(worktreePath), ...taskEnv };
 	// The dialect decides how the wrapper is invoked: a POSIX login shell running
 	// the `.sh`, or `powershell.exe -File` running the `.ps1`.
 	const launch = launchDialect().scriptLaunch(runScriptPath, { cwd: worktreePath, env, shellPath: userShell });

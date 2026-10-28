@@ -7,7 +7,7 @@ import { toast } from "../../toast";
 import Tooltip from "../Tooltip";
 
 /**
- * The yazi terminal file manager in a tmux pane beside the agent. It is the
+ * The yazi terminal file manager in a terminal pane beside the agent. It is the
  * secondary path now: the file explorer panel needs nothing installed, and this
  * is offered from its header menu for users who want yazi's file operations.
  */

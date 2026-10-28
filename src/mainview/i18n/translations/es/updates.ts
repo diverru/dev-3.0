@@ -107,8 +107,6 @@ const updates = {
 	"update.tasksInProgressWarning_one": "{count} tarea está en curso. Reiniciar ahora puede interrumpir su agente.",
 	"update.tasksInProgressWarning_other": "{count} tareas están en curso. Reiniciar ahora puede interrumpir sus agentes.",
 	"changelog.showMore": "Mostrar más",
-	"changelog.contributedBy": "PR de",
-	"changelog.suggestedBy": "por",
 };
 
 export default updates;

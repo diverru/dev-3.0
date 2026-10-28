@@ -110,8 +110,6 @@ const updates = {
 	"update.tasksInProgressWarning_one": "{count} task is in progress. Restarting now can interrupt its agent.",
 	"update.tasksInProgressWarning_other": "{count} tasks are in progress. Restarting now can interrupt their agents.",
 	"changelog.showMore": "Show more",
-	"changelog.contributedBy": "PR by",
-	"changelog.suggestedBy": "by",
 } as const;
 
 export default updates;

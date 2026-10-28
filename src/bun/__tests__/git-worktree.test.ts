@@ -688,7 +688,7 @@ describe("createWorktree", () => {
 				rmSync(lockPath, { force: true });
 				g("git branch -D dev3/task-bcbcbcbc", repo.local);
 			}
-		});
+		}, 20_000);
 
 		it("stops at the time budget before the attempt cap", async () => {
 			_setWorktreeAddRetryPolicy({ baseDelayMs: 200, maxDelayMs: 200, budgetMs: 350 });

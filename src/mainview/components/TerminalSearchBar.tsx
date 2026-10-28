@@ -1,5 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { Terminal } from "ghostty-web";
 import { api } from "../rpc";
+import { buildSearchLine, findMatches, type SearchLine, type TerminalSearchMatch } from "../terminal-search";
 import { useT } from "../i18n";
 import Tooltip from "./Tooltip";
 
@@ -18,6 +20,11 @@ interface TerminalSearchBarProps {
 	 * makes it obvious WHICH pane is being searched.
 	 */
 	onPaneResolved?: (paneId: string | null) => void;
+	/**
+	 * Native-backend terminal: search its own ghostty buffer instead of tmux
+	 * copy-mode. No tmuxSearch* call is made when this is set.
+	 */
+	term?: Terminal;
 }
 
 const SEARCH_DEBOUNCE_MS = 150;
@@ -28,10 +35,11 @@ const SEARCH_DEBOUNCE_MS = 150;
  * every match in the pane content natively; this bar only drives the query and
  * steps between matches. Enter / ↑ walk up the history (older), Shift+Enter /
  * ↓ walk back down (newer) — terminal convention: search starts at the most
- * recent output. See decision 141.
+ * recent output. See `decisions/2026/07/20/terminal-cmdf-tmux-copy-mode-search.md`. With `term` (native backend, no tmux) the
+ * same bar searches the renderer's ghostty buffer directly.
  */
 const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarProps>(
-	function TerminalSearchBar({ taskId, onClose, onPaneResolved }, ref) {
+	function TerminalSearchBar({ taskId, onClose, onPaneResolved, term }, ref) {
 		const t = useT();
 		const inputRef = useRef<HTMLInputElement>(null);
 		// Mirror the callback in a ref so runUpdate (called from the debounce
@@ -47,6 +55,9 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 		// Guards against out-of-order RPC responses while typing fast.
 		const requestSeqRef = useRef(0);
 
+		// Native search: index of the current match in the latest match list.
+		const matchIndexRef = useRef(0);
+
 		useImperativeHandle(ref, () => ({
 			focusInput: () => {
 				inputRef.current?.focus();
@@ -61,14 +72,59 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 		// Leaving the search (✕, Esc, task switch, terminal unmount) always exits
 		// copy-mode so the pane resumes live output — cleanup is the single path.
 		useEffect(() => {
+			if (term) return;
 			return () => {
 				const paneId = paneIdRef.current;
 				if (!paneId) return;
 				api.request.tmuxSearchCancel({ taskId, paneId }).catch(() => {});
 			};
-		}, [taskId]);
+		}, [taskId, term]);
+
+		// shortcut: wrapped scrollback rows unsplit, upgrade when ghostty exposes isWrapped for scrollback
+		function nativeMatches(q: string): TerminalSearchMatch[] {
+			const buffer = term!.buffer.active;
+			const lines: SearchLine[] = [];
+			for (let y = 0; y < buffer.length; y++) {
+				const line = buffer.getLine(y);
+				lines.push(line ? buildSearchLine(line) : { text: "", col: [], end: [] });
+			}
+			return findMatches(lines, q);
+		}
+
+		// ghostty's select() takes a viewport row but anchors it at viewportY, so
+		// scroll first, select, then scroll the match into view.
+		// shortcut: current-match highlight only, upgrade when ghostty has a decoration API
+		function revealNativeMatch(match: TerminalSearchMatch) {
+			const scrollback = term!.buffer.active.length - term!.rows;
+			const anchor = Math.min(match.row, scrollback);
+			term!.scrollToLine(anchor);
+			term!.select(match.col, match.row - anchor, match.length);
+			const top = Math.max(0, match.row - Math.floor(term!.rows / 2));
+			term!.scrollToLine(scrollback - top);
+		}
+
+		function runNativeUpdate(q: string) {
+			const found = nativeMatches(q);
+			matchIndexRef.current = found.length - 1;
+			setMatches(q ? found.length : null);
+			if (found.length) revealNativeMatch(found[matchIndexRef.current]);
+			else term!.clearSelection();
+		}
+
+		function runNativeStep(direction: "older" | "newer") {
+			if (!query) return;
+			// ghostty-web has no buffer-changed event, so re-read on every step.
+			const found = nativeMatches(query);
+			setMatches(found.length);
+			if (!found.length) return term!.clearSelection();
+			const delta = direction === "older" ? -1 : 1;
+			const from = Math.min(matchIndexRef.current, found.length - 1);
+			matchIndexRef.current = (from + delta + found.length) % found.length;
+			revealNativeMatch(found[matchIndexRef.current]);
+		}
 
 		function runUpdate(q: string) {
+			if (term) return runNativeUpdate(q);
 			const seq = ++requestSeqRef.current;
 			api.request
 				.tmuxSearchUpdate({ taskId, query: q, paneId: paneIdRef.current ?? undefined })
@@ -87,9 +143,18 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 		useEffect(() => {
 			const timer = setTimeout(() => runUpdate(query), SEARCH_DEBOUNCE_MS);
 			return () => clearTimeout(timer);
-		}, [taskId, query]);
+		}, [taskId, query, term]);
+
+		// Closing leaves the scroll position alone — only the highlight goes.
+		useEffect(() => {
+			if (!term) return;
+			return () => {
+				try { term.clearSelection(); } catch { /* disposed */ }
+			};
+		}, [term]);
 
 		function step(direction: "older" | "newer") {
+			if (term) return runNativeStep(direction);
 			const paneId = paneIdRef.current;
 			if (!paneId || !query) return;
 			api.request

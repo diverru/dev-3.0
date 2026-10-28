@@ -119,6 +119,8 @@ const updates = {
 	"update.tasksInProgressWarning_many": "{count} задач в работе. Перезапуск сейчас может прервать их агентов.",
 	"update.tasksInProgressWarning_other": "{count} задач в работе. Перезапуск сейчас может прервать их агентов.",
 	"changelog.showMore": "Показать ещё",
+	"changelog.contributedBy": "PR от",
+	"changelog.suggestedBy": "от",
 };
 
 export default updates;

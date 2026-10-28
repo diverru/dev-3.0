@@ -204,6 +204,7 @@ Rules:
   - **Optional two-digit `NN` right after the type** (`feature-00-foo`) ranks which features win the top `MAX_POPOVER_FEATURES` slots before the rest roll into "+N more": `00` = most prominent (demo-reel "wow"), higher = lower, omitted = mid-pack (priority 50). Type is still parsed from the first dash. Rank honestly (reuse the tips coolness rubric) and push dev-only/internal features to a high number so they never eat a user-facing slot. Numbering `fix-`/others is pointless — they only contribute a count.
 - **One worktree = one changelog file** — a single task produces exactly one entry for the whole session, not one per commit or per feature; if the task evolves, update/append the existing file.
 - **Credit community contributors:** if the change originated from a GitHub issue by an external user, end the file with a blank line then `Suggested by @username (h0x91b/dev-3.0#N)` — parsed into `suggestedBy`/`issueRef`/`issueUrl` and shown in the changelog UI as a linked credit. Example: `Suggested by @roiros (h0x91b/dev-3.0#191)`.
+- **Credit external PR authors:** add `Contributed by @<login> (h0x91b/dev-3.0#<PR>)` as its own line only when the PR author is not the maintainer `h0x91b`; details in `change-logs/README.md`.
 - Full format spec: `change-logs/README.md`.
 
 ## Feature discovery tips

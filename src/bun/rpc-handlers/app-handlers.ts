@@ -6,6 +6,7 @@ import { PATHS, Utils } from "../electrobun-platform";
 import { readHostClipboardImage } from "../clipboard-image-reader";
 import type { AgentSkillInfo, AutoConfigureResult, ChangelogEntry, ExternalApp, FolderEntry, FolderListing, GitInitOffer, Project, SharedArtifact, TipState, UpdatePopoverPreview } from "../../shared/types";
 import { BUILTIN_OPS_BOARD_NAME, DEFAULT_EXTERNAL_APPS, STUCK_PREPARATION_FETCH_THRESHOLD_MS, extractRepoName } from "../../shared/types";
+import { parseChangelogCredits } from "../../shared/changelog-credits";
 import { buildUpdateChangelog, changedKeysFromPaths, changelogEntryKey, countMergedPrs, resolvePrevTag, selectReleaseWindow } from "../../shared/update-changelog";
 import * as data from "../data";
 import * as git from "../git";
@@ -622,26 +623,13 @@ async function getChangelogs(): Promise<ChangelogEntry[]> {
 					const slug = basename.slice(dashIdx + 1);
 					const content = await Bun.file(join(dayPath, file)).text();
 
-					let suggestedBy: string | undefined;
-					let issueUrl: string | undefined;
-					let issueRef: string | undefined;
-					const creditMatch = content.match(/Suggested by @(\S+)\s+\(([^)]+)\)/);
-					if (creditMatch) {
-						suggestedBy = creditMatch[1];
-						const ref = creditMatch[2];
-						const refMatch = ref.match(/^(.+?)#(\d+)$/);
-						if (refMatch) {
-							issueRef = `#${refMatch[2]}`;
-							issueUrl = `https://github.com/${refMatch[1]}/issues/${refMatch[2]}`;
-						}
-					}
+					const { credits, content: creditFree } = parseChangelogCredits(content);
 
 					const shortMatch = content.match(/^Short:\s*(.+)$/im);
 					const short = shortMatch ? shortMatch[1].trim() : undefined;
 
-					const cleanContent = content
+					const cleanContent = creditFree
 						.replace(/^Short:\s*.+$/im, "")
-						.replace(/\n*Suggested by @\S+\s+\([^)]+\)\s*$/, "")
 						.trim();
 					const firstSentence = cleanContent.split(/\.(?:\s|$)/)[0]?.trim() ?? slug;
 					const title = firstSentence.length > 120
@@ -656,9 +644,7 @@ async function getChangelogs(): Promise<ChangelogEntry[]> {
 						title: title || slug,
 						...(body && { body }),
 						...(short && { short }),
-						...(suggestedBy && { suggestedBy }),
-						...(issueUrl && { issueUrl }),
-						...(issueRef && { issueRef }),
+						...credits,
 					});
 				}
 			}

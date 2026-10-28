@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TaskTitleHoverCard from "../TaskTitleHoverCard";
 import { I18nProvider } from "../../i18n";
@@ -28,7 +28,11 @@ vi.mock("../../rpc", () => ({
 	},
 }));
 
-const agents = [{ id: "builtin-claude", name: "Claude Code", baseCommand: "claude", configurations: [] }] as CodingAgent[];
+const agents = [
+	{ id: "builtin-claude", name: "Claude Code", baseCommand: "claude", configurations: [] },
+	{ id: "builtin-codex", name: "Codex", baseCommand: "codex", configurations: [] },
+	{ id: "pinned", name: "Pinned", baseCommand: "claude", defaultConfigId: "cfg", configurations: [{ id: "cfg", name: "Cfg", envVars: { CLAUDE_CONFIG_DIR: "/home/me/.claude-preset" } }] },
+] as CodingAgent[];
 
 function renderCard(task: Partial<Task>) {
 	const full = { id: "t1", seq: 1, projectId: "p1", title: "Title", description: "", createdAt: "2025-01-01T00:00:00Z", agentId: null, ...task } as Task;
@@ -42,6 +46,10 @@ function renderCard(task: Partial<Task>) {
 }
 
 describe("TaskTitleHoverCard — agents row", () => {
+	beforeEach(() => {
+		vi.mocked(api.request.getProjectClaudeLogin).mockClear();
+		vi.mocked(api.request.listAgentAccounts).mockClear();
+	});
 	afterEach(() => localStorage.removeItem("dev3-streamer-mode"));
 
 	it("lists the agent's account after hover", async () => {
@@ -88,7 +96,7 @@ describe("TaskTitleHoverCard — agents row", () => {
 		await userEvent.setup().hover(screen.getByText("trigger"));
 		await screen.findByText("Claude Code");
 		await waitFor(() => expect(api.request.listAgentAccounts).toHaveBeenCalled());
-		await new Promise((r) => setTimeout(r, 20));
+		await act(async () => { await vi.mocked(api.request.listAgentAccounts).mock.results[0].value; });
 		expect(screen.queryByText("system@example.com")).toBeNull();
 		expect(screen.queryByText("System login")).toBeNull();
 		resolve({ configDir: "/home/me/.claude-proj", identity: { email: "proj@example.com", organization: null, plan: null, planLabel: null, accountId: null } });
@@ -100,7 +108,43 @@ describe("TaskTitleHoverCard — agents row", () => {
 		renderCard({ agentId: "builtin-claude", accountId: null });
 		await userEvent.setup().hover(screen.getByText("trigger"));
 		await screen.findByText("Claude Code");
-		await new Promise((r) => setTimeout(r, 20));
+		await act(async () => {
+			await vi.mocked(api.request.listAgentAccounts).mock.results[0].value;
+			await vi.mocked(api.request.getProjectClaudeLogin).mock.results[0].value.catch(() => {});
+		});
 		expect(screen.queryByText("system@example.com")).toBeNull();
+	});
+
+	it("does not look up the project login for a managed claude account", async () => {
+		renderCard({ agentId: "builtin-claude", accountId: "a1" });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		await screen.findByText("Work");
+		expect(api.request.getProjectClaudeLogin).not.toHaveBeenCalled();
+	});
+
+	it("does not look up the project login for codex on the system login", async () => {
+		renderCard({ agentId: "builtin-codex", accountId: null });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		expect(await screen.findByText("System login")).toBeTruthy();
+		expect(api.request.getProjectClaudeLogin).not.toHaveBeenCalled();
+	});
+
+	it("looks up the project login by project id for claude on the system login", async () => {
+		renderCard({ agentId: "builtin-claude", accountId: null, projectId: "p9" });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		await screen.findByText("Project login");
+		expect(api.request.getProjectClaudeLogin).toHaveBeenCalledWith({ projectId: "p9" });
+	});
+
+	it("shows the preset login for an agent whose preset pins the config dir", async () => {
+		renderCard({ agentId: "pinned", accountId: null });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		expect(await screen.findByText("Preset login")).toBeTruthy();
+	});
+
+	it("shows the default account when no account was recorded", async () => {
+		renderCard({ agentId: "builtin-claude" });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		expect(await screen.findByText("Default account")).toBeTruthy();
 	});
 });

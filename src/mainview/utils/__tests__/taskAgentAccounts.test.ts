@@ -196,11 +196,70 @@ describe("describeTaskAgentAccounts", () => {
 		expect(rows[1].account).toEqual({ kind: "system", email: "codex-system@example.com" });
 	});
 
+	describe("onSystemClaude", () => {
+		const row = (t: Task, a: CodingAgent[] = agents) => describeTaskAgentAccounts(t, a, accounts)[0];
+		it("is true for claude with a null account id", () => {
+			expect(row(task({ sessionState: { panes: [pane({ accountId: null })] } })).onSystemClaude).toBe(true);
+		});
+		it("is false for a managed account, the default, and codex on null", () => {
+			expect(row(task({ sessionState: { panes: [pane({ accountId: "a1" })] } })).onSystemClaude).toBe(false);
+			expect(row(task({ sessionState: { panes: [pane({})] } })).onSystemClaude).toBe(false);
+			expect(row(task({ sessionState: { panes: [pane({ agentCmd: "codex", agentId: "builtin-codex", accountId: null })] } })).onSystemClaude).toBe(false);
+		});
+		it("is false for claude under a preset pin", () => {
+			const pinned = { ...claudeAgent, defaultConfigId: "cfg", configurations: [{ id: "cfg", name: "Cfg", envVars: { CLAUDE_CONFIG_DIR: "/x" } }] } as CodingAgent;
+			expect(row(task({ sessionState: { panes: [pane({ configId: "cfg", accountId: null })] } }), [pinned]).onSystemClaude).toBe(false);
+		});
+	});
+
+	describe("synthetic row and agent family", () => {
+		const ccr = { id: "ccr", name: "CCR", baseCommand: "ccr code", agentFamily: "claude", configurations: [] } as CodingAgent;
+
+		it("is skipped when the task agent is not in the list", () => {
+			expect(describeTaskAgentAccounts(task({ agentId: "gone", accountId: "a1" }), agents, accounts)).toEqual([]);
+		});
+
+		it("takes the family from the agent for a wrapper command", () => {
+			const [row] = describeTaskAgentAccounts(task({ agentId: "ccr", accountId: "a1" }), [ccr], accounts);
+			expect(row.account).toMatchObject({ kind: "managed", label: "Work" });
+		});
+
+		it("takes the family from the pane's agent when the pane has none", () => {
+			const [row] = describeTaskAgentAccounts(
+				task({ sessionState: { panes: [pane({ agentCmd: "ccr code", agentId: "ccr", accountId: "a1" })] } }), [ccr], accounts,
+			);
+			expect(row.account).toMatchObject({ kind: "managed", label: "Work" });
+		});
+	});
+
+	describe("Auto", () => {
+		const pick = { reason: { code: "only", short: null }, at: "x" } as Task["accountPick"];
+
+		it("is off when pane 0 carries its own account, different from the task's", () => {
+			const [row] = describeTaskAgentAccounts(
+				task({ accountId: "a1", accountPick: pick, sessionState: { panes: [pane({ accountId: "a2" })] } }), agents, accounts,
+			);
+			expect(row.auto).toBe(false);
+		});
+
+		it("is on for the synthetic row with a pick and an account", () => {
+			const [row] = describeTaskAgentAccounts(task({ accountId: "a1", accountPick: pick }), agents, accounts);
+			expect(row.auto).toBe(true);
+		});
+	});
+
+	it("does not let the project login override a managed or default claude account", () => {
+		const projectLogin = { configDir: "/home/me/.claude-proj", identity: null };
+		const managed = describeTaskAgentAccounts(task({ sessionState: { panes: [pane({ accountId: "a1" })] } }), agents, accounts, projectLogin);
+		const unset = describeTaskAgentAccounts(task({ sessionState: { panes: [pane({})] } }), agents, accounts, projectLogin);
+		expect(managed[0].account).toMatchObject({ kind: "managed", label: "Work" });
+		expect(unset[0].account).toEqual({ kind: "default" });
+	});
+
 	describe("preset pin", () => {
 		const withEnv = (agent: CodingAgent, envVars: Record<string, string>): CodingAgent =>
 			({ ...agent, defaultConfigId: "cfg", configurations: [{ id: "cfg", name: "Cfg", envVars }] }) as CodingAgent;
 		const claudePinned = withEnv(claudeAgent, { CLAUDE_CONFIG_DIR: "/home/me/.claude-preset" });
-		const codexPinned = withEnv(codexAgent, { CODEX_HOME: "/home/me/.codex-preset" });
 		const claudePlain = withEnv(claudeAgent, { FOO: "1" });
 
 		it("reports the preset login for a claude config pinning CLAUDE_CONFIG_DIR, whatever the account id", () => {
@@ -218,10 +277,37 @@ describe("describeTaskAgentAccounts", () => {
 			expect(nullRow).toMatchObject({ account: { kind: "preset" }, onSystemClaude: false });
 		});
 
-		it("reports the preset login for a codex config pinning CODEX_HOME", () => {
+		const ompAgent = { id: "builtin-omp", name: "Omp", baseCommand: "omp", configurations: [] } as CodingAgent;
+		const piAgent = { id: "builtin-pi", name: "Pi", baseCommand: "pi", configurations: [] } as CodingAgent;
+		it.each([
+			[claudeAgent, "claude", "CLAUDE_CONFIG_DIR"],
+			[codexAgent, "codex", "CODEX_HOME"],
+			[ompAgent, "omp", "PI_CODING_AGENT_DIR"],
+			[piAgent, "pi", "PI_CODING_AGENT_DIR"],
+		])("reports the preset login for a %# config pinning %s's home (%s)", (agent, cmd, envKey) => {
+			const pinned = withEnv(agent, { [envKey]: "/home/me/.preset" });
 			const [row] = describeTaskAgentAccounts(
-				task({ sessionState: { panes: [pane({ agentCmd: "codex", agentId: "builtin-codex", configId: "cfg", accountId: "c1" })] } }),
-				[codexPinned], accounts,
+				task({ sessionState: { panes: [pane({ agentCmd: cmd, agentId: agent.id, configId: "cfg", accountId: "c1" })] } }), [pinned], accounts,
+			);
+			expect(row.account).toEqual({ kind: "preset" });
+		});
+
+		it("ignores a pin key that belongs to another agent", () => {
+			const wrongKey = withEnv(claudeAgent, { CODEX_HOME: "/home/me/.codex-preset" });
+			const [row] = describeTaskAgentAccounts(
+				task({ sessionState: { panes: [pane({ configId: "cfg", accountId: "a1" })] } }), [wrongKey], accounts,
+			);
+			expect(row.account).toMatchObject({ kind: "managed", label: "Work" });
+		});
+
+		it("takes the pin from the default config when configId is null", () => {
+			const [row] = describeTaskAgentAccounts(task({ sessionState: { panes: [pane({ accountId: "a1" })] } }), [claudePinned], accounts);
+			expect(row.account).toEqual({ kind: "preset" });
+		});
+
+		it("wins over an unloaded registry", () => {
+			const [row] = describeTaskAgentAccounts(
+				task({ sessionState: { panes: [pane({ configId: "cfg", accountId: "a1" })] } }), [claudePinned], null,
 			);
 			expect(row.account).toEqual({ kind: "preset" });
 		});

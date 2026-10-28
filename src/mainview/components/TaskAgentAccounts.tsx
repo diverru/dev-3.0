@@ -8,7 +8,7 @@ import { describeTaskAgentAccounts } from "../utils/taskAgentAccounts";
 import { useAgentAccountsState } from "./AgentAccountIndicator";
 import AgentLauncherBadge, { resolveAgentLauncherIcon } from "./AgentLauncherBadge";
 
-const TAG_CLASS = "rounded px-1 text-nano font-semibold uppercase tracking-wider";
+const TAG_CLASS = "rounded px-1 text-dense font-semibold uppercase tracking-wider";
 
 /** Mount only while the hover surface is open: it fetches the account registry. */
 export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: CodingAgent[] }) {
@@ -35,7 +35,7 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 			{rows.map(({ key, agent, agentName, account, auto }) => (
 				<div key={key} data-testid="task-agent-account-row" className="flex min-w-0 items-center gap-1.5 text-micro">
 					{agent && resolveAgentLauncherIcon(agent) && <AgentLauncherBadge agent={agent} size={12} />}
-					<span className="flex-shrink-0 text-fg-3">{agentName}</span>
+					<span className="min-w-0 max-w-[40%] truncate text-fg-3" title={agentName}>{agentName}</span>
 					{account.kind === "managed" && (
 						<span className="min-w-0 truncate font-medium text-fg-2 streamer-private" title={streamer ? undefined : account.label}>{account.label}</span>
 					)}
@@ -53,7 +53,7 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 					)}
 					{account.kind === "default" && <span className="text-fg-3">{t("taskAgents.default")}</span>}
 					{(account.kind === "managed" || account.kind === "system" || account.kind === "project") && account.email && (
-						<span className="min-w-0 truncate font-mono text-fg-3 streamer-private" title={streamer ? undefined : account.email}>
+						<span className="min-w-0 truncate text-fg-3 streamer-private" title={streamer ? undefined : account.email}>
 							{account.email}
 						</span>
 					)}

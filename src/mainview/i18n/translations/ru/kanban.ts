@@ -438,7 +438,7 @@ const kanban = {
 	"taskAgents.projectLogin": "Логин проекта",
 	"taskAgents.presetLogin": "Логин пресета",
 	"taskAgents.deleted": "Удалённый аккаунт",
-	"taskAgents.default": "Аккаунт по умолчанию",
+	"taskAgents.default": "Логин по умолчанию",
 	"taskAgents.auto": "Auto",
 	"taskAgents.api": "API",
 	"task.watchTooltip": "Следить — уведомлять при смене статуса",

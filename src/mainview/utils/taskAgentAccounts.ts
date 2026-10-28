@@ -91,15 +91,15 @@ export function describeTaskAgentAccounts(
 				accountId: p.accountId !== undefined ? p.accountId : i === 0 ? task.accountId : undefined,
 			}],
 	);
-	if (panes.length === 0 && task.agentId) {
-		const agent = agents.find((a) => a.id === task.agentId);
+	const taskAgent = panes.length === 0 && task.agentId ? agents.find((a) => a.id === task.agentId) : undefined;
+	if (taskAgent) {
 		sources.push({
 			key: 0,
 			main: true,
 			agentId: task.agentId,
 			configId: task.configId ?? null,
-			cmd: agent?.baseCommand ?? "",
-			family: agent?.agentFamily,
+			cmd: taskAgent.baseCommand,
+			family: taskAgent.agentFamily,
 			accountId: task.accountId,
 		});
 	}

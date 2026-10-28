@@ -318,7 +318,7 @@ function TerminalPreviewPopover({
 				</div>
 			)}
 			{showAgentsBlock && (
-				<div className="flex flex-col gap-1 border-b border-edge p-2">
+				<div className={`flex flex-col gap-1 p-2${html || loading ? " border-b border-edge" : ""}`}>
 					<span className="text-nano font-semibold uppercase tracking-wider text-fg-3">{t("taskAgents.title")}</span>
 					<TaskAgentAccountsList task={task!} agents={agents ?? []} />
 				</div>

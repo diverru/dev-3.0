@@ -94,6 +94,28 @@ describe("TerminalPreviewPopover — agent accounts", () => {
 		await waitFor(() => expect(screen.getByText("Deleted account")).toBeTruthy());
 	});
 
+	it("is visible with only the agents block", async () => {
+		renderPopover({ taskId: "t1", projectId: "p1", task: taskWith("a1"), agents: [claudeAgent] });
+		const block = (await screen.findByTestId("task-agent-accounts")).parentElement!;
+		expect((block.parentElement as HTMLElement).style.opacity).toBe("1");
+	});
+
+	it("draws the agents block border only when terminal content follows", async () => {
+		const first = renderPopover({ taskId: "t1", projectId: "p1", task: taskWith("a1"), agents: [claudeAgent] });
+		const bare = (await screen.findByTestId("task-agent-accounts")).parentElement!;
+		expect(bare.className).not.toContain("border-b");
+		first.unmount();
+		renderPopover({ taskId: "t1", projectId: "p1", html: "<pre>out</pre>", task: taskWith("a1"), agents: [claudeAgent] });
+		const withPreview = (await screen.findByTestId("task-agent-accounts")).parentElement!;
+		expect(withPreview.className).toContain("border-b");
+	});
+
+	it("renders the Auto tag when the router picked the account", async () => {
+		const pick = { reason: { code: "only", short: null }, at: "x" };
+		renderPopover({ taskId: "t1", projectId: "p1", task: taskWith("a1", { accountPick: pick }), agents: [claudeAgent] });
+		expect(await screen.findByText("Auto")).toBeTruthy();
+	});
+
 	it("renders no agents block when the task has no agent", () => {
 		renderPopover({ taskId: "t1", projectId: "p1", task: { id: "t1", agentId: null }, agents: [claudeAgent] });
 		expect(screen.queryByTestId("task-agent-accounts")).toBeNull();

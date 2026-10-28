@@ -2,10 +2,12 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import TerminalPreviewPopover from "../TerminalPreviewPopover";
 import { I18nProvider } from "../../i18n";
+import { api } from "../../rpc";
 
 vi.mock("../../rpc", () => ({
 	api: {
 		request: {
+			getNativeTaskAgents: vi.fn().mockResolvedValue([]),
 			listAgentAccounts: vi.fn().mockResolvedValue({
 				claude: {
 					accounts: [{ id: "a1", kind: "claude", label: "Work", identity: { email: "work@example.com" }, auth: "oauth", api: null, createdAt: 0 }],
@@ -120,5 +122,35 @@ describe("TerminalPreviewPopover — agent accounts", () => {
 		renderPopover({ taskId: "t1", projectId: "p1", task: { id: "t1", agentId: null }, agents: [claudeAgent] });
 		expect(screen.queryByTestId("task-agent-accounts")).toBeNull();
 		expect(screen.queryByText("Agents")).toBeNull();
+	});
+
+	describe("native task whose saved panes are all parked", () => {
+		const parkedNative = (extra: Record<string, unknown> = {}) => taskWith("a1", {
+			terminalBackend: "native",
+			sessionState: { panes: [{ agentCmd: "claude", agentId: "builtin-claude", configId: null, sessionId: null, parked: true }] },
+			...extra,
+		});
+
+		it("shows the section with the running extra agent", async () => {
+			vi.mocked(api.request.getNativeTaskAgents).mockResolvedValueOnce([
+				{ paneId: "p2", agentCmd: "claude", agentId: "builtin-claude", configId: null, accountId: "a1" },
+			]);
+			renderPopover({ taskId: "t1", projectId: "p1", task: parkedNative(), agents: [claudeAgent] });
+			expect(await screen.findByText("Work")).toBeTruthy();
+			expect(screen.getByText("Agents")).toBeTruthy();
+			expect(screen.getAllByTestId("task-agent-account-row")).toHaveLength(1);
+		});
+
+		it("shows no section when there is no extra agent", async () => {
+			renderPopover({ taskId: "t1", projectId: "p1", task: parkedNative(), agents: [claudeAgent] });
+			await waitFor(() => expect(api.request.getNativeTaskAgents).toHaveBeenCalled());
+			expect(screen.queryByText("Agents")).toBeNull();
+		});
+	});
+
+	it("neither mounts the list nor asks for native agents on a tmux task without agents", () => {
+		vi.mocked(api.request.getNativeTaskAgents).mockClear();
+		renderPopover({ taskId: "t1", projectId: "p1", task: { id: "t1", agentId: null }, agents: [claudeAgent] });
+		expect(api.request.getNativeTaskAgents).not.toHaveBeenCalled();
 	});
 });

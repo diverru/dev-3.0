@@ -1,6 +1,6 @@
 import type { AgentAccountKind, AgentAccountsState, ProjectClaudeLogin } from "../../shared/agent-accounts";
 import { AUTO_ACCOUNT_ID } from "../../shared/agent-accounts";
-import type { AgentFamily, CodingAgent, Task } from "../../shared/types";
+import type { AgentFamily, CodingAgent, NativeTaskAgent, Task } from "../../shared/types";
 import { agentKey } from "../../shared/agent-adapters/families";
 import { resolveTaskAgentConfig } from "./taskAgentMeta";
 
@@ -76,6 +76,8 @@ export function describeTaskAgentAccounts(
 	agents: CodingAgent[],
 	accounts: AgentAccountsState | null,
 	projectLogin: ProjectClaudeLogin | null | "pending" = null,
+	/** Native "+ Agent" panes: sessionState.panes does not record them. */
+	extraAgents: NativeTaskAgent[] = [],
 ): TaskAgentAccountRow[] {
 	const panes = task.sessionState?.panes ?? [];
 	const sources: Source[] = panes.flatMap((p, i) =>
@@ -103,6 +105,17 @@ export function describeTaskAgentAccounts(
 			accountId: task.accountId,
 		});
 	}
+
+	const offset = panes.length || 1;
+	extraAgents.forEach((p, i) => sources.push({
+		key: offset + i,
+		main: false,
+		agentId: p.agentId,
+		configId: p.configId,
+		cmd: p.agentCmd,
+		family: p.agentFamily ?? agents.find((a) => a.id === p.agentId)?.agentFamily,
+		accountId: p.accountId,
+	}));
 
 	return sources.map((s) => {
 		const agent = agents.find((a) => a.id === s.agentId) ?? null;

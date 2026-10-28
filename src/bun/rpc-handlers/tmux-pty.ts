@@ -1,4 +1,4 @@
-import { previewTaskHandoffHandler, spawnAgentInTask } from "./tmux-pty/agent-spawn";
+import { getNativeTaskAgents, previewTaskHandoffHandler, spawnAgentInTask } from "./tmux-pty/agent-spawn";
 import { spawnBugHuntersInTask } from "./tmux-pty/bug-hunters";
 import { checkDevServer, getDevServerStatus, restartDevServer, runDevServer, stopDevServer } from "./tmux-pty/dev-servers";
 import { restartTask, resumeTask, wakeTaskShell } from "./tmux-pty/resume";
@@ -42,6 +42,7 @@ export const tmuxPtyHandlers = {
 	tmuxSearchCancel,
 	spawnAgentInTask,
 	previewTaskHandoff: previewTaskHandoffHandler,
+	getNativeTaskAgents,
 	spawnBugHuntersInTask,
 	resumeTask,
 	restartTask,

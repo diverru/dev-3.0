@@ -139,7 +139,7 @@ function TerminalPreviewPopover({
 	const hasDescription = !!(description && description.trim());
 	const canEdit = !!taskId && !!projectId;
 	const showOverviewBlock = hasOverview || hasDescription || editing;
-	const showAgentsBlock = !!task && describeTaskAgentAccounts(task, agents ?? [], null).length > 0;
+	const showAgentsBlock = !!task && (task.terminalBackend === "native" || describeTaskAgentAccounts(task, agents ?? [], null).length > 0);
 
 	const overBudget = value.length > OVERVIEW_MAX_LEN;
 
@@ -318,10 +318,16 @@ function TerminalPreviewPopover({
 				</div>
 			)}
 			{showAgentsBlock && (
-				<div className={`flex flex-col gap-1 p-2${html || loading ? " border-b border-edge" : ""}`}>
-					<span className="text-nano font-semibold uppercase tracking-wider text-fg-3">{t("taskAgents.title")}</span>
-					<TaskAgentAccountsList task={task!} agents={agents ?? []} />
-				</div>
+				<TaskAgentAccountsList
+					task={task!}
+					agents={agents ?? []}
+					frame={(list) => (
+						<div className={`flex flex-col gap-1 p-2${html || loading ? " border-b border-edge" : ""}`}>
+							<span className="text-nano font-semibold uppercase tracking-wider text-fg-3">{t("taskAgents.title")}</span>
+							{list}
+						</div>
+					)}
+				/>
 			)}
 
 			<div className="flex-1 min-h-0 overflow-hidden">

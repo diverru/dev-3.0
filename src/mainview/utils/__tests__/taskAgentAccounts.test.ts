@@ -324,4 +324,22 @@ describe("describeTaskAgentAccounts", () => {
 			expect(row.account).toEqual({ kind: "preset" });
 		});
 	});
+
+	it("adds native extra agents after the main pane with their own accounts", () => {
+		const rows = describeTaskAgentAccounts(
+			task({ accountId: "a1", terminalBackend: "native", sessionState: { panes: [pane({})] } }), agents, accounts, null,
+			[
+				{ paneId: "p2", agentCmd: "claude", agentId: "builtin-claude", configId: null, accountId: "a2" },
+				{ paneId: "p3", agentCmd: "codex", agentId: "builtin-codex", configId: null, accountId: "c1" },
+			],
+		);
+		expect(rows.map((r) => r.key)).toEqual([0, 1, 2]);
+		expect(rows.map((r) => r.account.kind === "managed" && r.account.label)).toEqual(["Work", "work@example.com", "Codex Work"]);
+		expect(rows[1].auto).toBe(false);
+	});
+
+	it("leaves a tmux task without extra agents unchanged", () => {
+		const rows = describeTaskAgentAccounts(task({ accountId: "a1", sessionState: { panes: [pane({})] } }), agents, accounts);
+		expect(rows).toHaveLength(1);
+	});
 });

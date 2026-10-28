@@ -84,7 +84,7 @@ export default function TaskTitleHoverCard({ task, project, agents, children }: 
 		.filter(Boolean) as Label[];
 	const branch = task.branchName ?? task.existingBranch ?? null;
 	const age = compactAge(task.createdAt);
-	const hasAgents = describeTaskAgentAccounts(task, agents, null).length > 0;
+	const mountAgents = task.terminalBackend === "native" || describeTaskAgentAccounts(task, agents, null).length > 0;
 
 	const row = (label: string, value: ReactNode) => (
 		<div className="flex items-baseline gap-2">
@@ -123,7 +123,7 @@ export default function TaskTitleHoverCard({ task, project, agents, children }: 
 								? <span className={`font-mono break-all ${privacy.maskClass(project ?? task.projectId)}`}>{branch}</span>
 								: <span className="text-fg-muted">{t("taskHover.none")}</span>,
 						)}
-						{hasAgents && row(t("taskAgents.title"), <TaskAgentAccountsList task={task} agents={agents} />)}
+						{mountAgents && <TaskAgentAccountsList task={task} agents={agents} frame={(list) => row(t("taskAgents.title"), list)} />}
 						{row(
 							t("taskHover.labels"),
 							labels.length > 0

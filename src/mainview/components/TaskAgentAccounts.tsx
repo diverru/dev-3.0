@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ProjectClaudeLogin } from "../../shared/agent-accounts";
-import type { CodingAgent, Task } from "../../shared/types";
+import type { CodingAgent, NativeTaskAgent, Task } from "../../shared/types";
 import { useT } from "../i18n";
 import { api } from "../rpc";
 import { useStreamerMode } from "../streamer-mode";
@@ -10,12 +10,25 @@ import AgentLauncherBadge, { resolveAgentLauncherIcon } from "./AgentLauncherBad
 
 const TAG_CLASS = "rounded px-1 text-dense font-semibold uppercase tracking-wider";
 
-/** Mount only while the hover surface is open: it fetches the account registry. */
-export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: CodingAgent[] }) {
+/**
+ * Mount only while the hover surface is open: it fetches the account registry.
+ * `frame` wraps the list only when it has rows, so a parent never shows an empty section.
+ */
+export function TaskAgentAccountsList({ task, agents, frame }: { task: Task; agents: CodingAgent[]; frame?: (list: ReactNode) => ReactNode }) {
 	const t = useT();
 	const streamer = useStreamerMode();
 	const accounts = useAgentAccountsState(true);
-	const needsProjectLogin = describeTaskAgentAccounts(task, agents, null).some((r) => r.onSystemClaude);
+	const [extraAgents, setExtraAgents] = useState<NativeTaskAgent[]>([]);
+	useEffect(() => {
+		if (task.terminalBackend !== "native") return;
+		let cancelled = false;
+		api.request
+			.getNativeTaskAgents({ projectId: task.projectId, taskId: task.id })
+			.then((res) => { if (!cancelled) setExtraAgents(res); })
+			.catch(() => {});
+		return () => { cancelled = true; };
+	}, [task.terminalBackend, task.projectId, task.id]);
+	const needsProjectLogin = describeTaskAgentAccounts(task, agents, null, null, extraAgents).some((r) => r.onSystemClaude);
 	const [projectLogin, setProjectLogin] = useState<ProjectClaudeLogin | null | "pending">("pending");
 	useEffect(() => {
 		if (!needsProjectLogin) return;
@@ -27,10 +40,10 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 			.catch(() => {});
 		return () => { cancelled = true; };
 	}, [needsProjectLogin, task.projectId]);
-	const rows = describeTaskAgentAccounts(task, agents, accounts, needsProjectLogin ? projectLogin : null);
+	const rows = describeTaskAgentAccounts(task, agents, accounts, needsProjectLogin ? projectLogin : null, extraAgents);
 	if (rows.length === 0) return null;
 
-	return (
+	const list = (
 		<div data-testid="task-agent-accounts" className="flex flex-col gap-1">
 			{rows.map(({ key, agent, agentName, account, auto }) => (
 				<div key={key} data-testid="task-agent-account-row" className="flex min-w-0 items-center gap-1.5 text-micro">
@@ -69,4 +82,5 @@ export function TaskAgentAccountsList({ task, agents }: { task: Task; agents: Co
 			))}
 		</div>
 	);
+	return frame ? frame(list) : list;
 }

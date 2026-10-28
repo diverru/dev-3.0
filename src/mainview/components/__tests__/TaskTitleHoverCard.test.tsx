@@ -9,6 +9,7 @@ import type { CodingAgent, Task } from "../../../shared/types";
 vi.mock("../../rpc", () => ({
 	api: {
 		request: {
+			getNativeTaskAgents: vi.fn().mockResolvedValue([]),
 			getProjectClaudeLogin: vi.fn().mockResolvedValue({
 				configDir: "/home/me/.claude-proj",
 				identity: { email: "proj@example.com", organization: null, plan: null, planLabel: null, accountId: null },
@@ -146,5 +147,39 @@ describe("TaskTitleHoverCard — agents row", () => {
 		renderCard({ agentId: "builtin-claude" });
 		await userEvent.setup().hover(screen.getByText("trigger"));
 		expect(await screen.findByText("Default login")).toBeTruthy();
+	});
+
+	describe("native task whose saved panes are all parked", () => {
+		const parked = {
+			agentId: "builtin-claude",
+			accountId: "a1",
+			terminalBackend: "native" as const,
+			sessionState: { panes: [{ agentCmd: "claude", agentId: "builtin-claude", configId: null, sessionId: null, parked: true }] },
+		};
+
+		it("shows the agents row with the running extra agent", async () => {
+			vi.mocked(api.request.getNativeTaskAgents).mockResolvedValueOnce([
+				{ paneId: "p2", agentCmd: "claude", agentId: "builtin-claude", configId: null, accountId: "a1" },
+			]);
+			renderCard(parked);
+			await userEvent.setup().hover(screen.getByText("trigger"));
+			expect(await screen.findByText("Work")).toBeTruthy();
+			expect(screen.getByText("Agents")).toBeTruthy();
+		});
+
+		it("shows no agents row when there is no extra agent", async () => {
+			vi.mocked(api.request.getNativeTaskAgents).mockClear();
+			renderCard(parked);
+			await userEvent.setup().hover(screen.getByText("trigger"));
+			await waitFor(() => expect(api.request.getNativeTaskAgents).toHaveBeenCalled());
+			expect(screen.queryByText("Agents")).toBeNull();
+		});
+	});
+
+	it("neither mounts the list nor asks for native agents on a tmux task without agents", async () => {
+		vi.mocked(api.request.getNativeTaskAgents).mockClear();
+		renderCard({ agentId: null });
+		await userEvent.setup().hover(screen.getByText("trigger"));
+		expect(api.request.getNativeTaskAgents).not.toHaveBeenCalled();
 	});
 });

@@ -11,6 +11,8 @@ import { assertLaunchAgentsInstalled } from "../../agent-launch-availability";
 import { ensureArtifactTemplateEnv } from "../../artifact-template";
 import { markAgentPane } from "../../agent-prompt";
 import { dev3TaskTempPath } from "../../temp-paths";
+import { listNativeTaskAgents, writeNativeAgentAttribution } from "../../native-agent-attribution";
+import type { NativeTaskAgent } from "../../../shared/types/task-lifecycle";
 import { type AgentPromptDelivery } from "../../../shared/agent-prompt-delivery";
 import { handoffPrompt, prepareTaskHandoff, previewTaskHandoff } from "../../conversation-handoff";
 import type { HandoffPreview, SpawnAgentResult } from "../../../shared/conversation-handoff-model";
@@ -184,6 +186,10 @@ export async function spawnAgentInTask(params: {
 		accountId: launchAccountId,
 		agentFamily: resolvedAgentFamily,
 	};
+	if (handle.backend === "native") {
+		const { sessionId: _sessionId, paneId: _paneId, ...attribution } = paneEntry;
+		await writeNativeAgentAttribution(scriptPath, attribution);
+	}
 	const existingPanes = task.sessionState?.panes ?? [];
 	try {
 		const updated = await data.updateTask(project, task.id, {
@@ -235,5 +241,16 @@ export async function previewTaskHandoffHandler(params: { taskId: string; projec
 	} catch (error) {
 		log.warn("previewTaskHandoff failed; offering no handoff", { taskId: params.taskId.slice(0, 8), error: String(error) });
 		return null;
+	}
+}
+
+/** The "+ Agent" panes of a native task, which sessionState.panes does not record. */
+export async function getNativeTaskAgents(params: { taskId: string; projectId: string }): Promise<NativeTaskAgent[]> {
+	try {
+		const project = await data.getProject(params.projectId);
+		return await listNativeTaskAgents(await data.getTask(project, params.taskId));
+	} catch (error) {
+		log.warn("getNativeTaskAgents failed", { taskId: params.taskId.slice(0, 8), error: String(error) });
+		return [];
 	}
 }

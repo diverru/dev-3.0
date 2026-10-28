@@ -34,7 +34,7 @@ import type { AgentCancellationRequest, AgentCompletionRequest, AgentLaunchChoic
 import type { ScheduledMessageTarget } from "./scheduled-messages";
 import type { SharedArtifact, SharedImage } from "./shared-media";
 import type { ScriptPlacement, ScriptRunner, ScriptSource, WorktreeScripts } from "./package-scripts";
-import type { TaskSessionState } from "./task-lifecycle";
+import type { NativeTaskAgent, TaskSessionState } from "./task-lifecycle";
 import type { Automation, AutomationDraft } from "./automations";
 import type { NoteSource } from "./task-notes";
 import type { BranchStatus, MergeRoute, TaskDiffMode, TaskDiffResponse, UnsavedWork } from "./git-status";
@@ -1289,6 +1289,11 @@ export type AppRPCSchema = {
 			previewTaskHandoff: {
 				params: { taskId: string; projectId: string };
 				response: HandoffPreview | null;
+			};
+			/** Extra agents of a native task (not in sessionState.panes), with their launch account. */
+			getNativeTaskAgents: {
+				params: { taskId: string; projectId: string };
+				response: NativeTaskAgent[];
 			};
 			spawnBugHuntersInTask: {
 				params: { taskId: string; projectId: string; agentId: string | null; configId: string | null; count: number; accountId?: string | null };

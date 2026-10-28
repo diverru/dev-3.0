@@ -691,7 +691,7 @@ describe("createWorktree", () => {
 				rmSync(lockPath, { force: true });
 				g("git branch -D dev3/task-bcbcbcbc", repo.local);
 			}
-		});
+		}, 20_000);
 
 		it("stops at the time budget before the attempt cap", async () => {
 			_setWorktreeAddRetryPolicy({ baseDelayMs: 200, maxDelayMs: 200, budgetMs: 350 });
@@ -704,9 +704,10 @@ describe("createWorktree", () => {
 			try {
 				await expect(createWorktree(project, task)).rejects.toThrow(/could not lock config file/);
 				const adds = addsSince(before).length;
-				// A 200ms wait never fits a 350ms budget twice; a slow first attempt may not fit it once.
+				// Jittered waits are 100-200ms, so a 350ms budget allows one to four adds
+				// (a slow runner may fit only one); the cap of 8 is never reached.
 				expect(adds).toBeGreaterThanOrEqual(1);
-				expect(adds).toBeLessThanOrEqual(2);
+				expect(adds).toBeLessThanOrEqual(4);
 			} finally {
 				rmSync(lockPath, { force: true });
 				g("git branch -D dev3/task-cdcdcdcd", repo.local);

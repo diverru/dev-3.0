@@ -373,6 +373,24 @@ describe("resource-monitor on native tasks", () => {
 		expect(getResourceUsage("natv1234-x")).toEqual({ cpu: 5, rss: 102400 * 1024 });
 	});
 
+	it("pushes zero usage when a listed native task has no live pane left in the process table", async () => {
+		nativeTaskOnDisk();
+		mockGetAllSessionPanePids.mockResolvedValue(paneMap({}));
+		mockSpawn.mockReturnValueOnce(makeProc("  10     1   1000   0.0\n  11    10   204800   5.0\n"));
+
+		const push = vi.fn();
+		startResourceMonitor(push);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(getResourceUsage("natv1234-x")).toBeDefined();
+
+		clearProcessInfoCache();
+		mockSpawn.mockReturnValueOnce(makeProc("  1     0   1000   0.0\n"));
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		expect(getResourceUsage("natv1234-x")).toBeUndefined();
+		expect(push).toHaveBeenLastCalledWith("resourceUsageUpdated", { taskId: "natv1234", usage: { cpu: 0, rss: 0 } });
+	});
+
 	it("pushes zero usage once the native task goes away, and not on every tick before", async () => {
 		nativeTaskOnDisk();
 		mockGetAllSessionPanePids.mockResolvedValue(paneMap({}));

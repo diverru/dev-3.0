@@ -246,14 +246,25 @@ describe("getActiveSessionIds with native sessions", () => {
 		boot.settlePanes(fakePanesState(TASK_ID));
 		vi.mocked(bindNativeTaskPane).mockResolvedValue(fakeTerminal(TASK_ID) as never);
 		await creating;
-		await ensureNativePanePtySession(TASK_ID, "pane-2", `dev3-task-${TASK_ID}-pane-2`, "proj-1", "/tmp/wt");
+		try {
+			await ensureNativePanePtySession(TASK_ID, "pane-2", `dev3-task-${TASK_ID}-pane-2`, "proj-1", "/tmp/wt");
 
-		expect(getActiveSessionIds()).toEqual([{ taskId: TASK_ID, tmuxSocket: "" }]);
-
-		await destroyNativeTaskSession(TASK_ID);
+			expect(getActiveSessionIds()).toEqual([{ taskId: TASK_ID, tmuxSocket: "" }]);
+		} finally {
+			await destroyNativeTaskSession(TASK_ID);
+		}
 	});
 
-	it("lists nothing for a native session that is not bound yet", () => {
-		expect(getActiveSessionIds()).toEqual([]);
+	it("lists nothing for a native session that is registered but not bound yet", async () => {
+		const boot = deferredBoot(TASK_ID);
+		const creating = createNativeTaskSession(TASK_ID, "proj-1", "/tmp/wt", LAUNCH);
+		try {
+			expect(hasSession(TASK_ID)).toBe(true);
+			expect(getActiveSessionIds()).toEqual([]);
+		} finally {
+			boot.settlePanes(fakePanesState(TASK_ID));
+			await creating;
+			await destroyNativeTaskSession(TASK_ID);
+		}
 	});
 });

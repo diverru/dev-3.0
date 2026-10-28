@@ -16,6 +16,9 @@ vi.mock("../logger", () => ({
 	}),
 }));
 
+vi.mock("../port-tunnels", () => ({ cleanupTaskTunnels: vi.fn() }));
+
+import { cleanupTaskTunnels } from "../port-tunnels";
 import {
 	nativeTaskPaneRoots,
 	listNativeTaskIds,
@@ -994,6 +997,28 @@ describe("native task panes", () => {
 			await vi.advanceTimersByTimeAsync(10_000);
 
 			expect(push.mock.calls.map((c) => c[1].taskId)).toEqual([bound]);
+			// Each task's records are read once per cycle, so a task cannot be added twice.
+			expect(readPanes.mock.calls.map((c) => c[0])).toEqual([bound, "dead0000-aaaa-bbbb-cccc-ddddeeeeffff"]);
+		});
+
+		it("keeps a native task's ports and tunnels when the process table comes back empty", async () => {
+			const id = "empty000-aaaa-bbbb-cccc-ddddeeeeffff";
+			listTaskIds.mockReturnValue([id]);
+			records([{ host: 10, shell: 11 }]);
+			routeSpawnByArgv({ ps: NATIVE_PS, lsof: NATIVE_LSOF });
+			const push = vi.fn();
+
+			startPortScanPoller(push, () => []);
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(push).toHaveBeenCalledTimes(1);
+
+			routeSpawnByArgv({ ps: "", lsof: NATIVE_LSOF });
+			clearProcessInfoCache();
+			await vi.advanceTimersByTimeAsync(10_000);
+
+			expect(push).toHaveBeenCalledTimes(1);
+			expect(cleanupTaskTunnels).not.toHaveBeenCalledWith(id);
+			expect(getPortsForTask(id)).toHaveLength(1);
 		});
 
 		it("does not scan native sessions on win32, where ps and lsof do not exist", async () => {
@@ -1001,12 +1026,14 @@ describe("native task panes", () => {
 			Object.defineProperty(process, "platform", { value: "win32" });
 			try {
 				records([{ host: 10, shell: 11 }]);
+				listTaskIds.mockReturnValue([TASK]);
 				const push = vi.fn();
 
 				startPortScanPoller(push, () => [{ taskId: TASK, tmuxSocket: "" }]);
 				await vi.advanceTimersByTimeAsync(10_000);
 
 				expect(mockSpawn).not.toHaveBeenCalled();
+				expect(readPanes).not.toHaveBeenCalled();
 				expect(push).not.toHaveBeenCalled();
 			} finally {
 				Object.defineProperty(process, "platform", platform);

@@ -317,6 +317,8 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 	const [searchOpen, setSearchOpen] = useState(false);
 	// Native backend: the bar searches ghostty's own buffer (no tmux copy-mode).
 	const [searchTerm, setSearchTerm] = useState<Terminal | null>(null);
+	// True while the native search bar's highlight is the terminal's selection.
+	const searchOwnsSelectionRef = useRef(false);
 	// The link a touch user tapped — rendered as the Open / Copy sheet.
 	const [touchLink, setTouchLink] = useState<TouchLink | null>(null);
 	// The pane the search resolved to, and its %-rect over the terminal canvas —
@@ -1885,7 +1887,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 				// just-repainted cells when the app owns the screen
 				// (alt-screen or primary+mouse-tracking); ghostty-web
 				// won't do it on its own.
-				clearStaleSelectionOnWrite(batchTerm);
+				if (!searchOwnsSelectionRef.current) clearStaleSelectionOnWrite(batchTerm);
 				// ghostty-web never fires onRender, so the write is
 				// the "content changed" signal for the link underlines.
 				linkUnderlines?.requestRedraw();
@@ -2479,6 +2481,8 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 			if (!wrapper.contains(document.activeElement)) return;
 			e.preventDefault();
 			e.stopPropagation();
+			// A native task never falls back to tmux copy-mode: no terminal yet, no bar.
+			if (native && !termRef.current) return;
 			if (!searchBarRef.current) setSearchTerm(native ? termRef.current : null);
 			setSearchOpen(true);
 			// Already open → re-focus the input and select the query for retyping.
@@ -2863,6 +2867,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 					onClose={closeSearch}
 					onPaneResolved={setSearchPaneId}
 					term={searchTerm ?? undefined}
+					onHighlightChange={(on) => { searchOwnsSelectionRef.current = on; }}
 				/>
 			)}
 		</div>

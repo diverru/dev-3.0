@@ -162,12 +162,13 @@ describe("TerminalSearchBar", () => {
 		}
 		function renderNative(term = fakeTerm()) {
 			const onClose = vi.fn();
+			const onHighlightChange = vi.fn();
 			const view = render(
 				<I18nProvider>
-					<TerminalSearchBar taskId="task-1" onClose={onClose} term={term as unknown as Terminal} />
+					<TerminalSearchBar taskId="task-1" onClose={onClose} term={term as unknown as Terminal} onHighlightChange={onHighlightChange} />
 				</I18nProvider>,
 			);
-			return { term, view, onClose };
+			return { term, view, onClose, onHighlightChange };
 		}
 
 		it("shows the match count and starts at the newest match without any tmux call", async () => {
@@ -176,6 +177,10 @@ describe("TerminalSearchBar", () => {
 			await screen.findByText("3");
 			// Newest match: row 11 (scrollback 10 → anchor 10, viewport row 1).
 			await waitFor(() => expect(term.select).toHaveBeenLastCalledWith(2, 1, 6));
+			// Scroll to the anchor, select, then scroll the match into view — in that order.
+			const [first, second] = term.scrollToLine.mock.invocationCallOrder.slice(-2);
+			expect(first).toBeLessThan(term.select.mock.invocationCallOrder[0]);
+			expect(term.select.mock.invocationCallOrder[0]).toBeLessThan(second);
 			// Reveal: top row = 11 - 2 = 9, viewportY = 10 - 9 = 1.
 			expect(term.scrollToLine).toHaveBeenLastCalledWith(1);
 			expect(api.request.tmuxSearchUpdate).not.toHaveBeenCalled();
@@ -227,6 +232,36 @@ describe("TerminalSearchBar", () => {
 			await userEvent.keyboard("{Enter}");
 			await screen.findByText("0");
 			expect(term.clearSelection).toHaveBeenCalled();
+		});
+
+		it("an empty query reads no buffer lines", async () => {
+			const { term } = renderNative();
+			await userEvent.type(screen.getByLabelText("Search terminal…"), "a{Backspace}");
+			await waitFor(() => expect(screen.queryByText("0")).toBeNull());
+			term.buffer.active.getLine.mockClear();
+			await userEvent.keyboard("{Enter}");
+			expect(term.buffer.active.getLine).not.toHaveBeenCalled();
+		});
+
+		it("Enter inside the debounce window commits the typed query first and steps from it", async () => {
+			const { term } = renderNative();
+			await userEvent.type(screen.getByLabelText("Search terminal…"), "needle{Enter}", { delay: null });
+			// Update (newest, row 11) then one step older (row 5); the late timer must not undo it.
+			expect(term.select).toHaveBeenLastCalledWith(2, 0, 6);
+			await new Promise((r) => setTimeout(r, 250));
+			expect(term.select).toHaveBeenLastCalledWith(2, 0, 6);
+			expect(term.select).toHaveBeenCalledTimes(2);
+		});
+
+		it("reports highlight ownership: on with a match, off when it goes", async () => {
+			const { onHighlightChange } = renderNative();
+			const input = screen.getByLabelText("Search terminal…");
+			await userEvent.type(input, "needle");
+			await screen.findByText("3");
+			expect(onHighlightChange).toHaveBeenLastCalledWith(true);
+			await userEvent.type(input, "zz");
+			await screen.findByText("0");
+			expect(onHighlightChange).toHaveBeenLastCalledWith(false);
 		});
 
 		it("Enter with an empty query does nothing", async () => {

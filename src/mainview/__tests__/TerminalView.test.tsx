@@ -3330,8 +3330,59 @@ describe("TerminalView – ⌘F search target", () => {
 		await renderTerminal(true);
 		expect(vi.mocked(Terminal).mock.calls[0][0]).toMatchObject({ scrollback: 50_000_000 });
 		cleanup();
+		lastWebSocket = null;
 		vi.mocked(Terminal).mockClear();
 		await renderTerminal(false);
 		expect(vi.mocked(Terminal).mock.calls[0][0]).not.toHaveProperty("scrollback");
+	});
+
+	it("keeps the search highlight across agent writes on a mouse-tracking screen, and clears stale selections otherwise", async () => {
+		const clearSelection = vi.fn();
+		Object.assign(mockTermInstance, { clearSelection });
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		mockTermInstance.hasSelection.mockReturnValue(true);
+		try {
+			await renderTerminal(true);
+			await pressSearchShortcut();
+			const write = () => act(() => { lastWebSocket?.onmessage?.({ data: "spinner" } as MessageEvent); });
+			(searchBarProps.last as unknown as { onHighlightChange: (on: boolean) => void }).onHighlightChange(true);
+			clearSelection.mockClear();
+			write();
+			expect(clearSelection).not.toHaveBeenCalled();
+			(searchBarProps.last as unknown as { onHighlightChange: (on: boolean) => void }).onHighlightChange(false);
+			write();
+			expect(clearSelection).toHaveBeenCalled();
+		} finally {
+			Reflect.deleteProperty(mockTermInstance, "clearSelection");
+			mockTermInstance.hasMouseTracking.mockReturnValue(false);
+			mockTermInstance.hasSelection.mockReturnValue(false);
+		}
+	});
+
+	it("follows a recreated terminal while the bar stays open", async () => {
+		const { Terminal } = await import("ghostty-web");
+		const tree = (ptyUrl: string) => (
+			<I18nProvider><TerminalView ptyUrl={ptyUrl} taskId="t1" projectId="p1" native /></I18nProvider>
+		);
+		let view!: ReturnType<typeof render>;
+		await act(async () => {
+			view = render(tree("ws://localhost:1234"));
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
+		await pressSearchShortcut();
+		expect(searchBarProps.last?.term).toBe(mockTermInstance);
+
+		const replacement = { ...mockTermInstance };
+		vi.mocked(Terminal).mockImplementationOnce(function MockReplacement() { return replacement as never; });
+		await act(async () => {
+			view.rerender(tree("ws://localhost:5678"));
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await act(async () => { fireResize?.(); });
+		await waitFor(() => expect(searchBarProps.last?.term).toBe(replacement));
 	});
 });

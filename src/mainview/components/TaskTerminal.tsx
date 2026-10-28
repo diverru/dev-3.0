@@ -1205,7 +1205,6 @@ function TaskTerminal({ projectId, taskId, tasks, projects, navigate, dispatch, 
 				consumePendingFocus(handle);
 			}}
 			onNativeStatus={handleNativeStatus}
-			native={isNative}
 			touchComposeMode={touchInput && !rawMode}
 			onScrolledIntoHistory={scrollSignalFor(TMUX_VIEW)}
 		/>

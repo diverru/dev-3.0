@@ -25,6 +25,8 @@ interface TerminalSearchBarProps {
 	 * copy-mode. No tmuxSearch* call is made when this is set.
 	 */
 	term?: Terminal;
+	/** Native search: true while the bar's current-match highlight is the terminal selection. */
+	onHighlightChange?: (on: boolean) => void;
 }
 
 const SEARCH_DEBOUNCE_MS = 150;
@@ -39,13 +41,16 @@ const SEARCH_DEBOUNCE_MS = 150;
  * same bar searches the renderer's ghostty buffer directly.
  */
 const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarProps>(
-	function TerminalSearchBar({ taskId, onClose, onPaneResolved, term }, ref) {
+	function TerminalSearchBar({ taskId, onClose, onPaneResolved, term, onHighlightChange }, ref) {
 		const t = useT();
 		const inputRef = useRef<HTMLInputElement>(null);
 		// Mirror the callback in a ref so runUpdate (called from the debounce
 		// effect) always sees the latest without re-running the effect.
 		const onPaneResolvedRef = useRef(onPaneResolved);
 		onPaneResolvedRef.current = onPaneResolved;
+		const onHighlightChangeRef = useRef(onHighlightChange);
+		onHighlightChangeRef.current = onHighlightChange;
+		const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 		const [query, setQuery] = useState("");
 		// null = nothing searched yet (empty query) — the counter stays hidden.
 		const [matches, setMatches] = useState<number | null>(null);
@@ -82,6 +87,7 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 
 		// shortcut: wrapped scrollback rows unsplit, upgrade when ghostty exposes isWrapped for scrollback
 		function nativeMatches(q: string): TerminalSearchMatch[] {
+			if (!q) return [];
 			const buffer = term!.buffer.active;
 			const lines: SearchLine[] = [];
 			for (let y = 0; y < buffer.length; y++) {
@@ -101,6 +107,7 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 			term!.select(match.col, match.row - anchor, match.length);
 			const top = Math.max(0, match.row - Math.floor(term!.rows / 2));
 			term!.scrollToLine(scrollback - top);
+			onHighlightChangeRef.current?.(true);
 		}
 
 		function runNativeUpdate(q: string) {
@@ -108,11 +115,20 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 			matchIndexRef.current = found.length - 1;
 			setMatches(q ? found.length : null);
 			if (found.length) revealNativeMatch(found[matchIndexRef.current]);
-			else term!.clearSelection();
+			else {
+				term!.clearSelection();
+				onHighlightChangeRef.current?.(false);
+			}
 		}
 
 		function runNativeStep(direction: "older" | "newer") {
 			if (!query) return;
+			// Enter inside the debounce window: commit the typed query first, or its timer undoes this step.
+			if (debounceRef.current) {
+				clearTimeout(debounceRef.current);
+				debounceRef.current = null;
+				runNativeUpdate(query);
+			}
 			// ghostty-web has no buffer-changed event, so re-read on every step.
 			const found = nativeMatches(query);
 			setMatches(found.length);
@@ -141,7 +157,11 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 		}
 
 		useEffect(() => {
-			const timer = setTimeout(() => runUpdate(query), SEARCH_DEBOUNCE_MS);
+			const timer = setTimeout(() => {
+				debounceRef.current = null;
+				runUpdate(query);
+			}, SEARCH_DEBOUNCE_MS);
+			debounceRef.current = timer;
 			return () => clearTimeout(timer);
 		}, [taskId, query, term]);
 
@@ -150,6 +170,7 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 			if (!term) return;
 			return () => {
 				try { term.clearSelection(); } catch { /* disposed */ }
+				onHighlightChangeRef.current?.(false);
 			};
 		}, [term]);
 

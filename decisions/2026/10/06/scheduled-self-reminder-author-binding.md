@@ -2,6 +2,8 @@
 
 Superseded in part on 2026-10-27 by `decisions/2026/10/27/agent-signature-from-proc-start-tick.md`: on Linux `agentProcess` is `pid@linux:<boot id>:<start tick>`, not `pid@lstart`.
 
+Superseded in part on 2026-10-28 by `decisions/2026/10/28/native-scheduled-message-rebind.md`: on native, "resumed in a NEW pane or server" does not apply (a native pane keeps its id and registry session id); the main agent is rebound by the start signature of its pane root.
+
 ## 1. Context
 `dev3 message --in/--at` stored every queued message as `{ kind: "agent" }`, and the fire resolved that by focus (`resolveAgentPromptTargetPane`: last-focused agent pane first; native always `pane-1`). In a task with two agents, agent A's wake-up reached agent B (seq 2091). Cross-task addressing (#1809) is out of scope.
 
@@ -16,6 +18,3 @@ Older app versions ignore `author` and fire by focus — today's behaviour. No a
 
 ## 5. Alternatives considered
 Registering AI Review and native agents in `sessionState`: wider blast radius (recovery reconciles that list) and still blind to agent exit. Matching agent args like `--session-id`: Claude-only. Holding an unresolvable reminder in the queue: retries every tick and an older version would misfire it anyway. Rerouting every scheduled message to its sender: breaks task addressing for cross-task traffic.
-
-## 6. Native main agent after a restart (2026-10-28)
-A native pane's registry session id is `<coordinator>-pane-N`, so `paneToken` does not change when the main agent is resumed and the tmux "moved pane or server" test can never fire. The author gains an optional `paneGeneration`: the start signature of pane-1's root process (`readAgentProcessSignature(shellPid)`), recorded for the native main agent only. A restart runs under a new root; an agent that exited leaves its handed-over shell under the same root (`exec`), so that case is still dropped. `resolveNativeMainAuthor` rebinds only when the author is pane-1, its `sessionId` equals the first `sessionState` entry (recorded without a pane id on native), pane-1 runs an agent, and the generation differs; a record without `paneGeneration` is dropped. The field is additive and `paneToken`, `agentProcess` and the agent handle are untouched: an older app that reads a newer record ignores the field and keeps comparing `paneToken` while the agent lives, and a newer app reading an older record sees no generation and drops it (N-2 readable both ways, no migration of stored data). Risk: a Start Fresh keeps the same registry id but writes a new conversation id, so it is dropped by the `sessionId` check, not by the generation.

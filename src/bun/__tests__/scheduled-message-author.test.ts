@@ -573,6 +573,39 @@ describe("a native main agent that restarts keeps its scheduled messages", () =>
 		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
 	});
 
+	it("drops it when the resumed agent exited too and a program runs in the shell it left", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		agentExits(150);
+		procs.push({ pid: 170, ppid: 150, args: "bun run dev" });
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
+	});
+
+	it("drops it for a task woken as a plain shell: the parked entry is not the agent", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		const parked = task([{ ...pane(null, "conv-a"), parked: true }], { terminalBackend: "native" } as Partial<Task>);
+		expect(await resolveScheduledMessageAuthorPane(parked, author)).toMatchObject({ ok: false });
+		expect(await captureScheduledMessageAuthor(parked, "pane-1", 103)).toBeNull();
+	});
+
+	it("drops it when only the signature text differs, not the root process", async () => {
+		const author = await authorOf();
+		procs = procs.filter((p) => ![101, 102, 103].includes(p.pid));
+		procs.push({ pid: 111, ppid: 100, args: "/Users/me/.local/bin/claude --resume conv-a", start: "Mon Oct  5 11:00:00 2026" });
+		vi.mocked(readAgentProcessSignature).mockImplementation(async (pid) => (pid === 100 ? "100@Mon Oct 5 08:00:00 2026" : sig(pid)));
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
+	});
+
+	it("reads the generation only where it is stored or compared", async () => {
+		const sender = await captureSenderAgent(nativeMain(), "pane-1", 103);
+		expect(sender.ok && sender.author).not.toHaveProperty("paneGeneration");
+		const listed = await readPaneAgentIdentity(nativeMain(), "pane-1");
+		expect(listed.ok && listed.author).not.toHaveProperty("paneGeneration");
+		const held = await readPaneAgentIdentity(nativeMain(), "pane-1", { generation: true });
+		expect(held.ok && held.author).toHaveProperty("paneGeneration", sig(100));
+	});
+
 	it("drops it after Start Fresh: another conversation runs in pane-1", async () => {
 		const author = await authorOf();
 		restartedAgent();

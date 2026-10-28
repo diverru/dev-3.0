@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Terminal } from "ghostty-web";
 import TerminalSearchBar from "../TerminalSearchBar";
@@ -237,10 +237,22 @@ describe("TerminalSearchBar", () => {
 		it("an empty query reads no buffer lines", async () => {
 			const { term } = renderNative();
 			await userEvent.type(screen.getByLabelText("Search terminal…"), "a{Backspace}");
-			await waitFor(() => expect(screen.queryByText("0")).toBeNull());
-			term.buffer.active.getLine.mockClear();
+			await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
+			expect(screen.queryByText("0")).toBeNull();
+			expect(term.buffer.active.getLine).not.toHaveBeenCalled();
 			await userEvent.keyboard("{Enter}");
 			expect(term.buffer.active.getLine).not.toHaveBeenCalled();
+		});
+
+		it("a step that finds nothing releases the highlight owner flag", async () => {
+			const { onHighlightChange } = renderNative();
+			await userEvent.type(screen.getByLabelText("Search terminal…"), "needle");
+			await screen.findByText("3");
+			expect(onHighlightChange).toHaveBeenLastCalledWith(true);
+			for (const y of [2, 5, 11]) lines[y] = `line ${y}`;
+			await userEvent.keyboard("{Enter}");
+			await screen.findByText("0");
+			expect(onHighlightChange).toHaveBeenLastCalledWith(false);
 		});
 
 		it("Enter inside the debounce window commits the typed query first and steps from it", async () => {
@@ -248,9 +260,11 @@ describe("TerminalSearchBar", () => {
 			await userEvent.type(screen.getByLabelText("Search terminal…"), "needle{Enter}", { delay: null });
 			// Update (newest, row 11) then one step older (row 5); the late timer must not undo it.
 			expect(term.select).toHaveBeenLastCalledWith(2, 0, 6);
-			await new Promise((r) => setTimeout(r, 250));
+			await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
 			expect(term.select).toHaveBeenLastCalledWith(2, 0, 6);
 			expect(term.select).toHaveBeenCalledTimes(2);
+			// One buffer read for the flushed update; the step reuses its list.
+			expect(term.buffer.active.getLine).toHaveBeenCalledTimes(lines.length);
 		});
 
 		it("reports highlight ownership: on with a match, off when it goes", async () => {

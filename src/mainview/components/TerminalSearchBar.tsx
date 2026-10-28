@@ -110,29 +110,34 @@ const TerminalSearchBar = forwardRef<TerminalSearchBarHandle, TerminalSearchBarP
 			onHighlightChangeRef.current?.(true);
 		}
 
-		function runNativeUpdate(q: string) {
+		function clearNativeHighlight() {
+			term!.clearSelection();
+			onHighlightChangeRef.current?.(false);
+		}
+
+		function runNativeUpdate(q: string): TerminalSearchMatch[] {
 			const found = nativeMatches(q);
 			matchIndexRef.current = found.length - 1;
 			setMatches(q ? found.length : null);
 			if (found.length) revealNativeMatch(found[matchIndexRef.current]);
-			else {
-				term!.clearSelection();
-				onHighlightChangeRef.current?.(false);
-			}
+			else clearNativeHighlight();
+			return found;
 		}
 
 		function runNativeStep(direction: "older" | "newer") {
 			if (!query) return;
 			// Enter inside the debounce window: commit the typed query first, or its timer undoes this step.
+			let found: TerminalSearchMatch[];
 			if (debounceRef.current) {
 				clearTimeout(debounceRef.current);
 				debounceRef.current = null;
-				runNativeUpdate(query);
+				found = runNativeUpdate(query);
+			} else {
+				// ghostty-web has no buffer-changed event, so re-read on every step.
+				found = nativeMatches(query);
+				setMatches(found.length);
 			}
-			// ghostty-web has no buffer-changed event, so re-read on every step.
-			const found = nativeMatches(query);
-			setMatches(found.length);
-			if (!found.length) return term!.clearSelection();
+			if (!found.length) return clearNativeHighlight();
 			const delta = direction === "older" ? -1 : 1;
 			const from = Math.min(matchIndexRef.current, found.length - 1);
 			matchIndexRef.current = (from + delta + found.length) % found.length;

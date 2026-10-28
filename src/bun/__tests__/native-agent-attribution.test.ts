@@ -27,7 +27,7 @@ describe("listNativeTaskAgents", () => {
 	it("returns alive spawn panes that have a sidecar", async () => {
 		await writeNativeAgentAttribution(spawnScript(1), attribution);
 		mocks.nativeTaskPaneCommands.mockResolvedValue([pane("p1", spawnScript(1))]);
-		expect(await listNativeTaskAgents(task())).toEqual([{ ...attribution, paneId: "p1" }]);
+		expect(await listNativeTaskAgents(task())).toEqual([{ ...attribution, paneId: "p1", shellPid: 1 }]);
 	});
 
 	it("skips dead, non-spawn and sidecar-less panes", async () => {
@@ -55,7 +55,6 @@ describe("listNativeTaskAgents", () => {
 			pane("other", dev3TaskTempPath(TASK_ID, "devserver-1.sh")),
 		]);
 		expect((await listNativeTaskAgents(task())).map((a) => a.paneId)).toEqual(["hunter"]);
-		rmSync(`${mainScript}.json`, { force: true });
 	});
 
 	it("returns nothing for a non-native task without reading panes", async () => {

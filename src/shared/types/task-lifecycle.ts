@@ -40,7 +40,7 @@ export function getPreparingStageProgress(stage: PreparingStage): number {
  */
 export const STUCK_PREPARATION_FETCH_THRESHOLD_MS = 60 * 1000;
 
-/** The launch attribution of one "+ Agent" pane on a native task. */
+/** The launch attribution of one "+ Agent" or bug-hunter pane on a native task. */
 export type NativeAgentAttribution = Pick<PaneSessionEntry, "agentCmd" | "agentId" | "configId" | "accountId" | "agentFamily">;
 
 export interface NativeTaskAgent extends NativeAgentAttribution {

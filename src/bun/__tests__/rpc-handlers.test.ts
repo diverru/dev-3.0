@@ -11132,7 +11132,7 @@ describe("handlers.spawnBugHuntersInTask on a native task", () => {
 		await launchHunters(2);
 
 		const { writeNativeAgentAttribution } = await import("../native-agent-attribution");
-		const scripts = (mockNativePanes.splitNativeTaskPane.mock.calls as any[][]).map((call) => call[3].launch.argv[0] as string);
+		const scripts = (mockNativePanes.splitNativeTaskPane.mock.calls as any[][]).map((call) => call[3].launch.argv.at(-1) as string);
 		expect(scripts).toHaveLength(2);
 		for (const scriptPath of scripts) {
 			expect(scriptPath).toContain("bughunt-");

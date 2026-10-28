@@ -170,8 +170,8 @@ describe("resolveAgentExitTargets — native extra agents", () => {
 	const dead = script("spawn-3");
 	const pane = (paneId: string, shellPid: number, alive = true) =>
 		({ paneId, sessionId: paneId, hostPid: 1, shellPid, cols: 80, rows: 24, alive });
-	const command = (paneId: string, path: string, alive = true) =>
-		({ paneId, sessionId: paneId, command: ["/bin/bash", path], shellPid: 0, alive });
+	const command = (paneId: string, path: string, shellPid: number, alive = true) =>
+		({ paneId, sessionId: paneId, command: ["/bin/bash", path], shellPid, alive });
 
 	afterEach(() => {
 		for (const path of [spawned, hunted, orphan, dead]) rmSync(`${path}.json`, { force: true });
@@ -186,11 +186,11 @@ describe("resolveAgentExitTargets — native extra agents", () => {
 			panes: [pane("pane-1", 555), pane("pane-2", 556), pane("pane-3", 557), pane("pane-4", 558), pane("pane-5", 559, false)],
 		});
 		vi.mocked(nativeTaskPaneCommands).mockResolvedValue([
-			command("pane-1", script("launch")),
-			command("pane-2", spawned),
-			command("pane-3", hunted),
-			command("pane-4", orphan),
-			command("pane-5", dead, false),
+			command("pane-1", script("launch"), 555),
+			command("pane-2", spawned, 556),
+			command("pane-3", hunted, 557),
+			command("pane-4", orphan, 558),
+			command("pane-5", dead, 559, false),
 		]);
 		const targets = await resolveAgentExitTargets(nativeTask());
 		expect(targets.map((t) => [t.paneId, t.rootPid, t.entry.agentCmd])).toEqual([
@@ -206,7 +206,7 @@ describe("resolveAgentExitTargets — native extra agents", () => {
 		vi.mocked(nativeTaskPanesState).mockResolvedValue({
 			taskId: "x", layout: "", activePaneId: "pane-2", panes: [pane("pane-2", 556)],
 		});
-		vi.mocked(nativeTaskPaneCommands).mockResolvedValue([command("pane-2", spawned)]);
+		vi.mocked(nativeTaskPaneCommands).mockResolvedValue([command("pane-2", spawned, 556)]);
 		const targets = await resolveAgentExitTargets(nativeTask({ sessionState: { panes: [] } } as Partial<Task>));
 		expect(targets.map((t) => [t.paneId, t.rootPid])).toEqual([["pane-2", 556]]);
 	});

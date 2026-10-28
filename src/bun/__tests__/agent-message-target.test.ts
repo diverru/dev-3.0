@@ -115,7 +115,7 @@ describe("resolveMainAgentTarget — where a task-addressed message goes", () =>
 
 describe("native extra agents (sidecar panes)", () => {
 	const native = () => task(null, { terminalBackend: "native" } as Partial<Task>);
-	const extra = { paneId: "pane-2", agentCmd: "claude", agentId: null, configId: null };
+	const extra = { paneId: "pane-2", agentCmd: "claude", agentId: null, configId: null, shellPid: 2 };
 
 	it("agentPaneRoles marks sidecar panes as agents", async () => {
 		vi.mocked(listNativeTaskAgents).mockResolvedValue([extra]);

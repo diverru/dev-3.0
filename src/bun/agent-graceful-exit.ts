@@ -141,11 +141,12 @@ export async function resolveAgentExitTargets(task: Task): Promise<AgentExitTarg
 		const state = await nativeTaskPanesState(task.id);
 		const targets: AgentExitTarget[] = [];
 		const agentPane = state?.panes.find((pane) => pane.paneId === NATIVE_AGENT_PANE_ID);
-		if (agentPane?.alive && entries[0]) targets.push({ paneId: agentPane.paneId, rootPid: agentPane.shellPid, entry: entries[0] });
+		if (agentPane?.alive && entries[0]) {
+			targets.push({ paneId: agentPane.paneId, rootPid: agentPane.shellPid, entry: entries[0] });
+		}
 		// "+ Agent" and hunter panes live in sidecars, not in sessionState.panes.
-		for (const agent of await listNativeTaskAgents(task)) {
-			const shellPid = state?.panes.find((pane) => pane.paneId === agent.paneId)?.shellPid;
-			if (shellPid) targets.push({ paneId: agent.paneId, rootPid: shellPid, entry: { ...agent, sessionId: null } });
+		for (const { paneId, shellPid, ...agent } of await listNativeTaskAgents(task)) {
+			if (shellPid > 0) targets.push({ paneId, rootPid: shellPid, entry: { ...agent, sessionId: null } });
 		}
 		return targets;
 	}

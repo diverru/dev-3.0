@@ -22,13 +22,14 @@ export function useYaziLauncher(task: Task | undefined, project: Project | undef
 	async function launch() {
 		if (!task || !project) return;
 		try {
+			// Before the RPC: the terminal waits for a pane it has not seen yet, and
+			// polling may report the new pane before the reply arrives.
+			requestTaskTerminalFocus(task.id);
 			const result = await api.request.openFileBrowser({ taskId: task.id, projectId: project.id });
 			if (result && (result as { notInstalled?: boolean }).notInstalled) {
 				setInstallCmd((result as { installCommand?: string }).installCommand ?? "");
 				setLinuxHint(!!(result as { linuxHint?: boolean }).linuxHint);
 				setInstallPopup(true);
-			} else {
-				requestTaskTerminalFocus(task.id);
 			}
 		} catch (err) {
 			toast.error(t("infoPanel.fileBrowserFailed", { error: String(err) }), { taskId: task.id });

@@ -897,6 +897,8 @@ function ActiveTasksSidebar({
 						userOverview={hoveredTask?.userOverview ?? null}
 						description={hoveredTask?.description ?? null}
 						attentionReasons={hoveredTask ? bellReasons?.get(hoveredTask.id) : undefined}
+						task={hoveredTask}
+						agents={agents}
 					/>
 				);
 			})()}

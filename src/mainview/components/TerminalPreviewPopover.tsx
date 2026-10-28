@@ -4,6 +4,9 @@ import { createPortal } from "react-dom";
 import type { TerminalPreviewState } from "../hooks/useTerminalPreview";
 import { api } from "../rpc";
 import { useT } from "../i18n";
+import type { CodingAgent, Task } from "../../shared/types";
+import { describeTaskAgentAccounts } from "../utils/taskAgentAccounts";
+import { TaskAgentAccountsList } from "./TaskAgentAccounts";
 
 const OVERVIEW_MAX_LEN = 500;
 const FALLBACK_DESCRIPTION_CHARS = 240;
@@ -23,6 +26,9 @@ interface TerminalPreviewPopoverProps extends TerminalPreviewState {
 	description?: string | null;
 	/** Accumulated attention reasons from `dev3 attention` — shown as a banner atop the popover. */
 	attentionReasons?: string[];
+	/** With `agents`, adds the per-agent account block. */
+	task?: Task | null;
+	agents?: CodingAgent[];
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -44,6 +50,8 @@ function TerminalPreviewPopover({
 	userOverview,
 	description,
 	attentionReasons,
+	task,
+	agents,
 }: TerminalPreviewPopoverProps) {
 	const t = useT();
 	const reasons = (attentionReasons ?? []).map((r) => r.trim()).filter(Boolean);
@@ -131,6 +139,7 @@ function TerminalPreviewPopover({
 	const hasDescription = !!(description && description.trim());
 	const canEdit = !!taskId && !!projectId;
 	const showOverviewBlock = hasOverview || hasDescription || editing;
+	const showAgentsBlock = !!task && describeTaskAgentAccounts(task, agents ?? [], null).length > 0;
 
 	const overBudget = value.length > OVERVIEW_MAX_LEN;
 
@@ -151,7 +160,7 @@ function TerminalPreviewPopover({
 				left: pos.left,
 				width: 420,
 				maxHeight: editing ? 520 : 420,
-				opacity: html || loading || showOverviewBlock || hasReason ? 1 : 0,
+				opacity: html || loading || showOverviewBlock || showAgentsBlock || hasReason ? 1 : 0,
 			}}
 			onMouseEnter={cancelClose}
 			onMouseLeave={() => { if (!editing) scheduleClose(); }}
@@ -306,6 +315,12 @@ function TerminalPreviewPopover({
 							{displayText || t("overview.empty")}
 						</p>
 					)}
+				</div>
+			)}
+			{showAgentsBlock && (
+				<div className={`flex flex-col gap-1 p-2${html || loading ? " border-b border-edge" : ""}`}>
+					<span className="text-nano font-semibold uppercase tracking-wider text-fg-3">{t("taskAgents.title")}</span>
+					<TaskAgentAccountsList task={task!} agents={agents ?? []} />
 				</div>
 			)}
 

@@ -314,6 +314,51 @@ export function collectDescendants(pid: number, tree: Map<number, number[]>): nu
 }
 
 /**
+ * Native pane records, injected like {@link setNativeDevServerProbe}: the native
+ * registry sits behind `bun:ffi` and this file is reachable from the renderer's
+ * module graph. Without a reader, native tasks are skipped.
+ */
+export type NativePaneRecordsReader = {
+	listTaskIds: () => string[];
+	readPanes: (taskId: string) => Array<{ hostPid: number; shellPid: number; command: string[] }>;
+};
+
+let nativePaneRecordsReader: NativePaneRecordsReader | null = null;
+
+export function setNativePaneRecordsReader(reader: NativePaneRecordsReader): void {
+	nativePaneRecordsReader = reader;
+}
+
+/** Ids of the tasks that own a native pane set on disk — read from records, no process spawned. */
+export function listNativeTaskIds(): string[] {
+	return nativePaneRecordsReader?.listTaskIds() ?? [];
+}
+
+/**
+ * The live shell of every native pane a task owns, from the on-disk records only.
+ * A pane counts when its host (which spawns the shell directly) still has that
+ * shell as a child — no ownership recovery, so pollers can call it every tick.
+ */
+export function nativeTaskPaneRoots(
+	taskId: string,
+	tree: Map<number, number[]>,
+): Array<{ shellPid: number; command: string[] }> {
+	return (nativePaneRecordsReader?.readPanes(taskId) ?? [])
+		.filter((pane) => tree.get(pane.hostPid)?.includes(pane.shellPid))
+		.map(({ shellPid, command }) => ({ shellPid, command }));
+}
+
+/** Every PID of a native task's panes: each live shell and all its descendants. */
+export function nativeTaskPids(taskId: string, tree: Map<number, number[]>): Set<number> {
+	const pids = new Set<number>();
+	for (const { shellPid } of nativeTaskPaneRoots(taskId, tree)) {
+		pids.add(shellPid);
+		for (const d of collectDescendants(shellPid, tree)) pids.add(d);
+	}
+	return pids;
+}
+
+/**
  * Build the full PID set (pane PIDs + all descendants) for a tmux session.
  * Also includes PIDs from the corresponding dev server session (dev3-dev-*)
  * if one exists, so that ports opened by `runDevServer` are detected.
@@ -401,6 +446,7 @@ export type NativeDevServerProbe = (
 	task: Task,
 	socket: string,
 	serverName: string,
+	tree: Map<number, number[]>,
 ) => Promise<{ alive: boolean; rootPid: number | null } | null>;
 
 let nativeDevServerProbe: NativeDevServerProbe | null = null;
@@ -446,7 +492,7 @@ export async function buildDevServerSummary(
 	const entries: DevServerSummaryEntry[] = [];
 	for (const server of declared) {
 		const devSession = devServerSessionName(task.id, server.name);
-		const nativeState = nativeDevServerProbe ? await nativeDevServerProbe(task, socket, server.name) : null;
+		const nativeState = nativeDevServerProbe ? await nativeDevServerProbe(task, socket, server.name, tree) : null;
 		const running = nativeState ? nativeState.alive : paneMap?.has(devSession) === true;
 		if (!running) {
 			entries.push({ name: server.name, isDefault: server.isDefault, running: false, ports: [] });
@@ -634,7 +680,21 @@ async function poll(generation: number) {
 	try {
 		if (!getActiveSessionsFn || !pushMessageFn) return;
 
-		const sessions = getActiveSessionsFn();
+		// Native sessions are scanned with ps/lsof, which win32 does not have.
+		const bound = getActiveSessionsFn().filter((s) => s.tmuxSocket !== "" || process.platform !== "win32");
+		const sessions = [...bound];
+		// A native task whose primary shell exited keeps surviving aux panes (a dev
+		// server) but has no bound session, so it is found from the records instead.
+		let processTree: Map<number, number[]> | undefined;
+		const unbound = process.platform === "win32"
+			? []
+			: listNativeTaskIds().filter((id) => !bound.some((s) => s.taskId === id));
+		if (unbound.length > 0) {
+			processTree = (await collectProcessInfo()).tree;
+			for (const taskId of unbound) {
+				if (nativeTaskPaneRoots(taskId, processTree).length > 0) sessions.push({ taskId, tmuxSocket: "" });
+			}
+		}
 		const activeTaskIds = new Set(sessions.map((s) => s.taskId));
 
 		// Clean up stale cache entries. Same hook tears down any port-tunnels
@@ -653,7 +713,7 @@ async function poll(generation: number) {
 		// One ps + one lsof + one tmux list-panes -a for the whole cycle.
 		// collectProcessInfo is TTL-cached — shared with the resource-monitor
 		// poller firing in the same cycle.
-		const processTree = (await collectProcessInfo()).tree;
+		processTree ??= (await collectProcessInfo()).tree;
 		const lsofOutput = await scanListeningSockets();
 		if (lsofOutput === null) {
 			// Not measured is not "no ports": keep every task's last known ports.
@@ -663,6 +723,8 @@ async function poll(generation: number) {
 		}
 		failedLsofScans = 0;
 		const socketNames = new Set(sessions.map((s) => s.tmuxSocket));
+		// "" marks a native session: it has no tmux server to ask.
+		socketNames.delete("");
 		const paneMaps = new Map<string, Map<string, number[]>>();
 		for (const socketName of socketNames) {
 			paneMaps.set(socketName, await getAllSessionPanePids(socketName));
@@ -671,7 +733,9 @@ async function poll(generation: number) {
 		for (const { taskId, tmuxSocket } of sessions) {
 			const sessionName = taskSessionName(taskId);
 			try {
-				const owned = await scanTaskPorts(tmuxSocket, sessionName, lsofOutput, processTree, paneMaps.get(tmuxSocket));
+				const owned = tmuxSocket === ""
+					? parseLsofOutput(lsofOutput, nativeTaskPids(taskId, processTree))
+					: await scanTaskPorts(tmuxSocket, sessionName, lsofOutput, processTree, paneMaps.get(tmuxSocket));
 				// A containerised devScript never owns its published socket — the
 				// container runtime's daemon does — so ownership alone leaves the UI
 				// showing no ports at all for such a task (issue #1427).

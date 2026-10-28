@@ -421,6 +421,21 @@ export async function nativeTaskPaneCommandsStrict(taskId: string): Promise<Nati
 	return { kind: "read", panes };
 }
 
+/** Ids of the tasks with a native pane set on disk. Reads files only — no recovery, no `ps`. */
+export function nativeTaskIdsOnDisk(): string[] {
+	const prefix = nativeTaskSessionId("");
+	return getBackend().listCoordinatorIds()
+		.filter((id) => id.startsWith(prefix))
+		.map((id) => id.slice(prefix.length));
+}
+
+/** A task's pane records as written, with no ownership check. For pollers that cross-check `ps` themselves. */
+export function nativeTaskPaneRecords(
+	taskId: string,
+): Array<{ paneId: string; hostPid: number; shellPid: number; command: string[] }> {
+	return getBackend().readPaneRecords(coordinatorId(taskId));
+}
+
 /**
  * True when the coordinator record exists and contains at least one owned pane.
  * Read-only: does NOT register or cache the recovered coordinator as a side effect.

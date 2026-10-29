@@ -29,7 +29,7 @@ import type { AgentModelAvailability, CodingAgent } from "./coding-agents";
 import type { AgentLiveModels } from "../agent-live-models";
 import type { ExternalApp, FilePreviewResult, GlobalSettings, NativeTerminalAvailability, ResolvedTerminalPath, TaskTerminalBackendInfo, TipState } from "./global-settings";
 import type { ModelCatalogView, ModelSidecarStatus, PxpipeProxyStatus } from "./model-routing";
-import type { AutoConfigureResult, ConfigSourceEntry, Dev3RepoConfig, GitHubCliStatus, GitInitOffer, Project, ProjectSettingsUpdate, PrResolveFailureReason, ShellAvailability, ShellPromptPreview } from "./project";
+import type { AutoConfigureResult, BoardCopyFailureReason, BoardCopyOffer, ConfigSourceEntry, Dev3RepoConfig, GitHubCliStatus, GitInitOffer, Project, ProjectSettingsUpdate, PrResolveFailureReason, ShellAvailability, ShellPromptPreview } from "./project";
 import type { CustomColumn, Label } from "./labels-columns";
 import type { Space, SpacesFile } from "./spaces";
 import type { AgentCancellationRequest, AgentCompletionRequest, AgentLaunchChoice, AgentLaunchRequest, LaunchVariant, TaskDialogSubject } from "./agent-launch";
@@ -163,13 +163,13 @@ export type AppRPCSchema = {
 				/** `name` is optional: the backend derives it from the path, which is the
 				 *  only side that knows how to spell a path on its own platform. */
 				/** `autoConfigure` writes detected settings to `.dev3/config.local.json`; `autoConfigured` reports the outcome. */
-				params: { path: string; name?: string; autoConfigure?: boolean };
+				params: { path: string; name?: string; autoConfigure?: boolean; boardCopy?: boolean };
 				/** `gitInit` is set when the folder could be made a repo in place (needs the user's confirmation). */
-				response: { ok: true; project: Project; autoConfigured?: AutoConfigureResult } | { ok: false; error: string; gitInit?: GitInitOffer };
+				response: { ok: true; project: Project; autoConfigured?: AutoConfigureResult; boardCopyOffer?: BoardCopyOffer } | { ok: false; error: string; gitInit?: GitInitOffer };
 			};
 			cloneAndAddProject: {
-				params: { url: string; baseDir: string; repoName?: string; progressId?: string; autoConfigure?: boolean };
-				response: { ok: true; project: Project; autoConfigured?: AutoConfigureResult } | { ok: false; error: string };
+				params: { url: string; baseDir: string; repoName?: string; progressId?: string; autoConfigure?: boolean; boardCopy?: boolean };
+				response: { ok: true; project: Project; autoConfigured?: AutoConfigureResult; boardCopyOffer?: BoardCopyOffer } | { ok: false; error: string };
 			};
 			createDirectory: {
 				params: { parentPath: string; name: string };
@@ -177,8 +177,19 @@ export type AppRPCSchema = {
 			};
 			initAndAddProject: {
 				/** `initNonEmpty`: the user confirmed initializing a folder that already has files. */
-				params: { path: string; name?: string; initNonEmpty?: boolean; autoConfigure?: boolean };
-				response: { ok: true; project: Project; gitInit?: GitInitOffer; autoConfigured?: AutoConfigureResult } | { ok: false; error: string; gitInit?: GitInitOffer };
+				params: { path: string; name?: string; initNonEmpty?: boolean; autoConfigure?: boolean; boardCopy?: boolean };
+				response: { ok: true; project: Project; gitInit?: GitInitOffer; autoConfigured?: AutoConfigureResult; boardCopyOffer?: BoardCopyOffer } | { ok: false; error: string; gitInit?: GitInitOffer };
+			};
+			/**
+			 * Restore an EMPTY board from the copy in its project folder (`.dev3/board/`).
+			 * Refuses a board with tasks, a missing or unreadable copy, and a copy in a
+			 * format this version does not read. Turns the copy on.
+			 */
+			restoreBoardCopy: {
+				params: { projectId: string };
+				response:
+					| { ok: true; restored: number; missing: number }
+					| { ok: false; reason: "no-copy" | "invalid" | "unsupported-version" | "board-not-empty"; version?: string };
 			};
 			/** Create (or re-open) the throwaway sandbox repo dev3 owns, under `~/.dev3.0/sandbox`. */
 			createSandboxProject: {
@@ -1869,6 +1880,8 @@ export type AppRPCSchema = {
 		messages: {
 			taskUpdated: { projectId: string; task: Task };
 			projectUpdated: { project: Project };
+			/** A board-copy write failed; sent once per failure streak, cleared by the next write that succeeds. */
+			boardCopyFailed: { projectId: string; projectName: string; reason: BoardCopyFailureReason };
 			/** A project registered outside the renderer (`dev3 projects add|clone`). */
 			projectAdded: { project: Project };
 			spacesUpdated: { file: SpacesFile };

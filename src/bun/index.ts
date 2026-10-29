@@ -1,4 +1,5 @@
 import { stopAgentMessageLogWatches } from "./agent-message-log-watch";
+import { startBoardCopy, stopBoardCopy } from "./board-copy";
 import { claudeSessionWatches } from "./claude-session-watch";
 import Electrobun, {
 	ApplicationMenu,
@@ -657,6 +658,7 @@ await rehydrateTaskLifecycles();
 
 // Start background merge detection poller
 startMergeDetectionPoller();
+startBoardCopy();
 
 // Start background PR detection poller (auto-moves review-by-user → review-by-colleague)
 startPRDetectionPoller();
@@ -880,6 +882,7 @@ function runGlobalQuitCleanup(): void {
 	log.info("App is quitting, running global cleanup");
 	stopFreezeDiagnostics();
 	stopAgentMessageLogWatches();
+	stopBoardCopy();
 	claudeSessionWatches.close();
 	// Snapshot window geometry so an update restart reopens on the same screen.
 	try { flushWindowState(); } catch (err) { log.warn("flushWindowState failed", { error: String(err) }); }

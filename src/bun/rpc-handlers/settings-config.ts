@@ -29,6 +29,7 @@ import { getCurrentUiTheme, setCurrentUiTheme } from "../theme-state";
 import { getAllFeatureFlags, setFeatureFlags as cacheFeatureFlags } from "../feature-flags";
 import { resolveAnalyticsDistinctId as resolveDistinctId } from "../analytics-identity";
 import { collectTelemetryProfile } from "../telemetry-profile";
+import { runBoardCopy } from "../board-copy";
 import { extractConfigFromParams, getPushMessage, getSystemRequirements, log, resolveBinaryPath, setFocusMode } from "./shared";
 import { binaryCandidatesOnPath, tmuxSearchPaths } from "./shared-pure";
 import { agentBinaryPathOverride, isExecutableFile } from "../executable";
@@ -135,6 +136,8 @@ async function updateProjectSettings(params: { projectId: string } & ProjectSett
 		...(params.githubAuthHost !== undefined ? { githubAuthHost: params.githubAuthHost } : {}),
 		...(params.githubAuthLogin !== undefined ? { githubAuthLogin: params.githubAuthLogin } : {}),
 		...(params.sensitive !== undefined ? { sensitive: params.sensitive } : {}),
+		...(params.boardCopy !== undefined && project.kind !== "virtual" ? { boardCopy: params.boardCopy || undefined } : {}),
+		...(params.boardCopyMessages !== undefined ? { boardCopyMessages: params.boardCopyMessages || undefined } : {}),
 		...(params.autoAccountExclusions !== undefined
 			? { autoAccountExclusions: normalizeAccountExclusions(params.autoAccountExclusions) }
 			: {}),
@@ -158,6 +161,7 @@ async function updateProjectSettings(params: { projectId: string } & ProjectSett
 	// not a raw record a config file may override.
 	const updated = saved.kind === "virtual" ? saved : await repoConfig.resolveProjectConfig(saved);
 	getPushMessage()?.("projectUpdated", { project: updated });
+	if (params.boardCopy === true) void runBoardCopy(saved.id);
 	log.info("← updateProjectSettings done");
 	return updated;
 }

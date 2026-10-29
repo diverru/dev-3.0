@@ -31,7 +31,30 @@ const TASK_BACKUPS_DIR = "tasks-backups";
 const TASK_BACKUP_RETENTION_HOURS = 72;
 // `name` is display-only: `path` is deliberately absent, so a rename never moves
 // a data dir, worktree dir or slug (AGENTS.md on-disk invariants).
-type ProjectUpdates = Partial<Pick<Project, "name" | "setupScript" | "setupScriptLaunchMode" | "devScript" | "cleanupScript" | "defaultBaseBranch" | "githubAuthHost" | "githubAuthLogin" | "clonePaths" | "labels" | "customColumns" | "columnOrder" | "autoReviewEnabled" | "peerReviewEnabled" | "sparseCheckoutEnabled" | "sparseCheckoutPaths" | "builtinColumnAgents" | "customStatusLabels" | "sensitive" | "autoAccountExclusions" | "reviewModePrompt" | "coordinatorPrompt" | "artifactTemplate" | "artifactTemplatePath" | "env" | "conversationImportOfferedAt">>;
+type ProjectUpdates = Partial<Pick<Project, "name" | "setupScript" | "setupScriptLaunchMode" | "devScript" | "cleanupScript" | "defaultBaseBranch" | "githubAuthHost" | "githubAuthLogin" | "clonePaths" | "labels" | "customColumns" | "columnOrder" | "autoReviewEnabled" | "peerReviewEnabled" | "sparseCheckoutEnabled" | "sparseCheckoutPaths" | "builtinColumnAgents" | "customStatusLabels" | "sensitive" | "autoAccountExclusions" | "reviewModePrompt" | "coordinatorPrompt" | "artifactTemplate" | "artifactTemplatePath" | "env" | "conversationImportOfferedAt" | "boardCopy" | "boardCopyMessages">>;
+
+type BoardChangeListener = (projectId: string | null) => void;
+const boardChangeListeners = new Set<BoardChangeListener>();
+
+/**
+ * Called after every task-store save (with its project id) and every
+ * project-list save (null: any project may have changed). The board copy
+ * follows the board through this; a listener's error never reaches a save.
+ */
+export function onBoardChanged(listener: BoardChangeListener): () => void {
+	boardChangeListeners.add(listener);
+	return () => boardChangeListeners.delete(listener);
+}
+
+function notifyBoardChanged(projectId: string | null): void {
+	for (const listener of boardChangeListeners) {
+		try {
+			listener(projectId);
+		} catch (err) {
+			log.warn("Board change listener failed", { error: String(err) });
+		}
+	}
+}
 
 export class DataFileReadError extends Error {
 	override name = "DataFileReadError";
@@ -222,6 +245,7 @@ async function rawSaveProjects(projects: Project[]): Promise<void> {
 	await atomicWriteFile(PROJECTS_FILE, JSON.stringify(projects, null, 2));
 	projectsCache.delete(PROJECTS_FILE);
 	log.info(`Saved ${projects.length} project(s)`);
+	notifyBoardChanged(null);
 }
 
 /**
@@ -771,6 +795,7 @@ async function rawSaveTasks(
 	await atomicWriteFile(file, JSON.stringify(split.tasks));
 	tasksCache.delete(file);
 	log.info(`Saved ${tasks.length} task(s)`, { projectId: project.id });
+	notifyBoardChanged(project.id);
 }
 
 async function writeHourlyTasksBackup(project: Project, filePath: string): Promise<void> {
@@ -789,6 +814,21 @@ export async function saveTasks(
 ): Promise<void> {
 	const file = tasksFile(project);
 	await withFileLock(file, () => rawSaveTasks(project, tasks));
+}
+
+/**
+ * Write `tasks` as the whole board, but only while the board is empty — the
+ * check and the write share one lock, so a task created in between makes this
+ * return false instead of being overwritten. Used by the board-copy restore.
+ */
+export async function restoreTasksIntoEmptyBoard(project: Project, tasks: Task[]): Promise<boolean> {
+	const file = tasksFile(project);
+	return withFileLock(file, async () => {
+		const existing = await rawLoadTasks(project, { strict: true });
+		if (existing.length > 0) return false;
+		await rawSaveTasks(project, tasks);
+		return true;
+	});
 }
 
 /**

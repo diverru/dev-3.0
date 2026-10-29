@@ -501,6 +501,20 @@ const COMMANDS: CommandHelp[] = [
 		],
 	},
 	{
+		name: "board",
+		summary: "The board copy dev3 keeps in the project folder (.dev3/board/) when it is turned on in Project Settings.",
+		subcommands: [
+			{
+				name: "export",
+				usage: "dev3 board export [--project <id>] [--json]",
+				summary: "Write the board copy now instead of waiting for the next board change.",
+				details: [
+					"Compares every file with the disk and writes only what differs. Refuses when the copy is off for the project.",
+				],
+			},
+		],
+	},
+	{
 		name: "label",
 		summary: "Manage project labels and task label assignments.",
 		subcommands: [

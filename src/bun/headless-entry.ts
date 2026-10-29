@@ -1,4 +1,5 @@
 import { stopAgentMessageLogWatches } from "./agent-message-log-watch";
+import { startBoardCopy, stopBoardCopy } from "./board-copy";
 import { claudeSessionWatches } from "./claude-session-watch";
 /**
  * Headless entry point for `dev3 remote`.
@@ -499,6 +500,7 @@ startQrAutoRefresh(() => getAccessUrl());
 await rehydrateTaskLifecycles();
 
 startMergeDetectionPoller();
+startBoardCopy();
 startPRDetectionPoller();
 
 startPortScanPoller(
@@ -589,6 +591,7 @@ setOnPaneExited((taskId, paneId) => {
 function shutdown(signal: string): void {
 	log.info(`Received ${signal}, shutting down`);
 	stopAgentMessageLogWatches();
+	stopBoardCopy();
 	claudeSessionWatches.close();
 	stopQrAutoRefresh();
 	stopPortScanPoller();

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { PATHS, Utils } from "../electrobun-platform";
 import { readHostClipboardImage } from "../clipboard-image-reader";
-import type { AgentSkillInfo, AutoConfigureResult, ChangelogEntry, ExternalApp, FolderEntry, FolderListing, GitInitOffer, Project, SharedArtifact, TipState, UpdatePopoverPreview } from "../../shared/types";
+import type { AgentSkillInfo, AutoConfigureResult, BoardCopyOffer, ChangelogEntry, ExternalApp, FolderEntry, FolderListing, GitInitOffer, Project, SharedArtifact, TipState, UpdatePopoverPreview } from "../../shared/types";
 import { BUILTIN_OPS_BOARD_NAME, DEFAULT_EXTERNAL_APPS, STUCK_PREPARATION_FETCH_THRESHOLD_MS, extractRepoName } from "../../shared/types";
 import { parseChangelogCredits } from "../../shared/changelog-credits";
 import { buildUpdateChangelog, changedKeysFromPaths, changelogEntryKey, countMergedPrs, resolvePrevTag, selectReleaseWindow } from "../../shared/update-changelog";
@@ -19,6 +19,7 @@ import { resolveDeepLink as resolveDeepLinkTarget } from "../deep-link";
 import { BUNDLED_CHANGELOG } from "../changelog-bundled";
 import * as repoConfig from "../repo-config";
 import { autoConfigureProject } from "../project-autoconfig";
+import { boardCopyOfferForNewProject, restoreBoardCopy } from "../board-copy";
 import { DEV3_HOME } from "../paths";
 import { createSandboxProject } from "../sandbox-project";
 import { IGNORED_FOLDER_JUNK, initGitInPlace, probeGitInit } from "../git-init-in-place";
@@ -322,9 +323,9 @@ function isInsideDev3Home(path: string): boolean {
 }
 
 async function addProjectImpl(
-	params: { path: string; name?: string; autoConfigure?: boolean },
+	params: { path: string; name?: string; autoConfigure?: boolean; boardCopy?: boolean },
 	opts: { offerGitInit?: boolean } = {},
-): Promise<{ ok: true; project: Project; autoConfigured?: AutoConfigureResult } | { ok: false; error: string; gitInit?: GitInitOffer }> {
+): Promise<{ ok: true; project: Project; autoConfigured?: AutoConfigureResult; boardCopyOffer?: BoardCopyOffer } | { ok: false; error: string; gitInit?: GitInitOffer }> {
 	log.info("→ addProject", params);
 	try {
 		// Protect the synthetic virtual-project namespace: a real git repo must
@@ -347,7 +348,13 @@ async function addProjectImpl(
 		// A renderer cannot name a project from its path: in remote mode the browser
 		// may be macOS while the repo lives on a Windows drive.
 		const name = params.name?.trim() || pathBasename(params.path);
-		const project = await data.addProject(params.path, name);
+		const added = await data.addProject(params.path, name);
+		// Read before the copy is switched on: its first write must not become the offer.
+		const boardCopyOffer = await boardCopyOfferForNewProject(added).catch((err) => {
+			log.warn("Could not read the project's board copy", { id: added.id, error: String(err) });
+			return null;
+		});
+		const project = params.boardCopy && !added.boardCopy ? await data.updateProject(added.id, { boardCopy: true }) : added;
 		try {
 			const defaultBranch = await git.getDefaultBranch(params.path);
 			await data.updateProject(project.id, { defaultBaseBranch: defaultBranch });
@@ -369,8 +376,13 @@ async function addProjectImpl(
 			log.warn("Failed to resolve config for the new project", { id: project.id, error: String(err) });
 			return project;
 		});
-		log.info("← addProject OK", { projectId: resolved.id, name: resolved.name, autoConfigured });
-		return autoConfigured ? { ok: true, project: resolved, autoConfigured } : { ok: true, project: resolved };
+		log.info("← addProject OK", { projectId: resolved.id, name: resolved.name, autoConfigured, boardCopyOffer: boardCopyOffer?.status });
+		return {
+			ok: true,
+			project: resolved,
+			...(autoConfigured ? { autoConfigured } : {}),
+			...(boardCopyOffer ? { boardCopyOffer } : {}),
+		};
 	} catch (err) {
 		log.error("addProject failed", { error: String(err), params });
 		return { ok: false, error: String(err) };
@@ -393,7 +405,7 @@ async function addVirtualProject(params: { name: string }): Promise<{ ok: true; 
 /** How often clone output updates are pushed to the renderer. */
 const CLONE_PROGRESS_PUSH_INTERVAL_MS = 150;
 
-async function cloneAndAddProject(params: { url: string; baseDir: string; repoName?: string; progressId?: string; autoConfigure?: boolean }): Promise<{ ok: true; project: Project; autoConfigured?: AutoConfigureResult } | { ok: false; error: string }> {
+async function cloneAndAddProject(params: { url: string; baseDir: string; repoName?: string; progressId?: string; autoConfigure?: boolean; boardCopy?: boolean }): Promise<{ ok: true; project: Project; autoConfigured?: AutoConfigureResult; boardCopyOffer?: BoardCopyOffer } | { ok: false; error: string }> {
 	log.info("→ cloneAndAddProject", params);
 	try {
 		const name = params.repoName || extractRepoName(params.url);
@@ -405,7 +417,7 @@ async function cloneAndAddProject(params: { url: string; baseDir: string; repoNa
 			const isRepo = await git.isGitRepo(targetDir);
 			if (isRepo) {
 				log.info("Directory already exists and is a git repo, adding as project", { targetDir });
-				return addProjectImpl({ path: targetDir, name, autoConfigure: params.autoConfigure });
+				return addProjectImpl({ path: targetDir, name, autoConfigure: params.autoConfigure, boardCopy: params.boardCopy });
 			}
 			return { ok: false, error: `Directory already exists: ${targetDir}` };
 		}
@@ -439,7 +451,7 @@ async function cloneAndAddProject(params: { url: string; baseDir: string; repoNa
 			if (progressTimer) clearInterval(progressTimer);
 		}
 
-		return addProjectImpl({ path: targetDir, name, autoConfigure: params.autoConfigure });
+		return addProjectImpl({ path: targetDir, name, autoConfigure: params.autoConfigure, boardCopy: params.boardCopy });
 	} catch (err) {
 		log.error("cloneAndAddProject failed", { error: String(err), params });
 		return { ok: false, error: String(err) };
@@ -504,8 +516,8 @@ function isEffectivelyEmpty(path: string): boolean {
  *   the renderer sends after the user confirmed. Otherwise the reply carries
  *   `gitInit` describing what would happen. The user's files are never committed.
  */
-async function initAndAddProject(params: { path: string; name?: string; initNonEmpty?: boolean; autoConfigure?: boolean }): Promise<
-	{ ok: true; project: Project; gitInit?: GitInitOffer; autoConfigured?: AutoConfigureResult } | { ok: false; error: string; gitInit?: GitInitOffer }
+async function initAndAddProject(params: { path: string; name?: string; initNonEmpty?: boolean; autoConfigure?: boolean; boardCopy?: boolean }): Promise<
+	{ ok: true; project: Project; gitInit?: GitInitOffer; autoConfigured?: AutoConfigureResult; boardCopyOffer?: BoardCopyOffer } | { ok: false; error: string; gitInit?: GitInitOffer }
 > {
 	log.info("→ initAndAddProject", params);
 	try {
@@ -523,7 +535,7 @@ async function initAndAddProject(params: { path: string; name?: string; initNonE
 		if (!offer) {
 			if (await git.isGitRepo(params.path)) {
 				log.info("initAndAddProject: folder is already a git repo — registering as-is");
-				return addProjectImpl({ path: params.path, name: params.name, autoConfigure: params.autoConfigure });
+				return addProjectImpl({ path: params.path, name: params.name, autoConfigure: params.autoConfigure, boardCopy: params.boardCopy });
 			}
 			return { ok: false, error: "This folder cannot be initialized: Git could not read the repository it belongs to" };
 		}
@@ -543,7 +555,7 @@ async function initAndAddProject(params: { path: string; name?: string; initNonE
 		if (!initialized.ok) return initialized;
 
 		log.info("initAndAddProject: initial commit created, registering project");
-		const added = await addProjectImpl({ path: params.path, name: params.name, autoConfigure: params.autoConfigure });
+		const added = await addProjectImpl({ path: params.path, name: params.name, autoConfigure: params.autoConfigure, boardCopy: params.boardCopy });
 		return added.ok && !silent ? { ...added, gitInit: initialized.offer } : added;
 	} catch (err) {
 		log.error("initAndAddProject failed", { error: String(err), params });
@@ -1103,7 +1115,8 @@ export const appHandlers = {
 	reorderProjects,
 	listDirectory,
 	listAgentSkills,
-	addProject: (params: { path: string; name?: string; autoConfigure?: boolean }) => addProjectImpl(params, { offerGitInit: true }),
+	addProject: (params: { path: string; name?: string; autoConfigure?: boolean; boardCopy?: boolean }) => addProjectImpl(params, { offerGitInit: true }),
+	restoreBoardCopy: (params: { projectId: string }) => restoreBoardCopy(params.projectId),
 	createSandboxProject,
 	addVirtualProject,
 	cloneAndAddProject,

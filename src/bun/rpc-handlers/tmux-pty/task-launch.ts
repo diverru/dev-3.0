@@ -31,7 +31,7 @@ import { getPushMessage, AGENT_ENV_DEFAULTS, buildAgentEnv, buildAgentRetryWrapp
 import { launchDialect } from "../../../shared/platform-launch";
 import { devViewerPaneIds, setTmuxSessionPortEnv } from "./dev-servers";
 import { dev3ShellPromptEnv } from "../../shell-init";
-import { fileBrowserPaneIds, findTaskAcrossProjects } from "./task-state";
+import { findTaskAcrossProjects } from "./task-state";
 
 const MAIN_AGENT_PANE_CAPTURE_ATTEMPTS = 10;
 
@@ -825,7 +825,6 @@ export async function launchColumnAgent(
 }
 
 export function cleanupTaskTmuxState(taskId: string): void {
-	fileBrowserPaneIds.delete(taskId);
 	// One viewer pane per dev server, all keyed under this task.
 	for (const key of [...devViewerPaneIds.keys()]) {
 		if (key.startsWith(`${taskId}::`)) devViewerPaneIds.delete(key);

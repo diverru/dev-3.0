@@ -657,15 +657,30 @@ describe("setup-script wrapper — one flavour per backend", () => {
 			expect(tmux.splitWindow).not.toHaveBeenCalled();
 		});
 
-		it("splits the task session running yazi when it is installed", async () => {
+		// The script path in the launch command is what the fileBrowser marker finds,
+		// so the pane is labelled, toggled and kept out of pane-run placement on tmux too.
+		it("opens yazi through the shared aux-pane seam, running the yazi script", async () => {
 			await tmuxPtyHandlers.openFileBrowser({ taskId: TASK_ID, projectId: "proj-1" });
 
-			expect(tmux.splitWindow).toHaveBeenCalledWith(expect.objectContaining({
-				target: `dev3-${TASK_ID.slice(0, 8)}`,
-				command: "yazi",
+			expect(vi.mocked(sharedPure.writeLaunchScript)).toHaveBeenCalledWith(`/tmp/dev3/${TASK_ID}/yazi.sh`, "yazi\n");
+			expect(vi.mocked(auxPanes.openAuxPane)).toHaveBeenCalledWith(expect.objectContaining({
+				purpose: "fileBrowser",
+				placement: "below",
 				cwd: WORKTREE,
+				socket: "dev3",
+				tmuxCommand: `bash "/tmp/dev3/${TASK_ID}/yazi.sh"`,
 			}));
+			expect(tmux.splitWindow).not.toHaveBeenCalled();
+		});
+
+		it("closes the yazi pane instead when one is alive", async () => {
+			vi.mocked(auxPanes.auxPaneAlive).mockResolvedValueOnce(true);
+
+			await tmuxPtyHandlers.openFileBrowser({ taskId: TASK_ID, projectId: "proj-1" });
+
+			expect(vi.mocked(auxPanes.closeAuxPane)).toHaveBeenCalledWith(expect.anything(), "fileBrowser", "dev3");
 			expect(vi.mocked(auxPanes.openAuxPane)).not.toHaveBeenCalled();
+			expect(tmux.killPane).not.toHaveBeenCalled();
 		});
 	});
 

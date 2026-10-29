@@ -108,14 +108,14 @@ function CreditLink({ url, className, children }: { url?: string; className: str
 	);
 }
 
+// Credits stay English in every locale: changelog entries themselves are English-only.
 function CreditPrefix({ entry }: { entry: ChangelogEntry }) {
-	const t = useT();
 	if (!entry.suggestedBy && !entry.contributedBy) return null;
 	return (
 		<span className="text-fg-3 mr-1.5">
 			{entry.contributedBy && (
 				<>
-					{t("changelog.contributedBy")}{" "}
+					PR by{" "}
 					<CreditLink url={entry.prUrl} className="text-accent">
 						@{entry.contributedBy}
 					</CreditLink>
@@ -132,7 +132,7 @@ function CreditPrefix({ entry }: { entry: ChangelogEntry }) {
 			)}
 			{entry.suggestedBy && (
 				<>
-					{t("changelog.suggestedBy")}{" "}
+					by{" "}
 					<CreditLink url={entry.issueUrl} className="text-accent">
 						@{entry.suggestedBy}
 					</CreditLink>

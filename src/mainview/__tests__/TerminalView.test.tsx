@@ -1,4 +1,4 @@
-import { render, act, fireEvent, waitFor } from "@testing-library/react";
+import { render, act, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import TerminalView, { type TerminalHandle, TERMINAL_SYNC_GATE_TIMEOUT_MS, buildResizeDance, buildCursorMoveSequence, clearStaleSelectionOnWrite, normalizePastedText } from "../TerminalView";
 import { I18nProvider } from "../i18n";
 import { api } from "../rpc";
@@ -242,6 +242,19 @@ beforeEach(() => {
 			writeText: clipboardWriteTextMock,
 		},
 	});
+});
+
+// Records the props TerminalView gives the ⌘F bar; the bar itself is tested separately.
+const searchBarProps = vi.hoisted(() => ({ last: null as null | { term?: unknown } }));
+vi.mock("../components/TerminalSearchBar", async () => {
+	const { forwardRef, useImperativeHandle } = await import("react");
+	return {
+		default: forwardRef<unknown, { term?: unknown }>(function SearchBarStub(props, ref) {
+			searchBarProps.last = props;
+			useImperativeHandle(ref, () => ({ focusInput: () => {} }), []);
+			return <div data-testid="search-bar-stub" />;
+		}),
+	};
 });
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -3265,5 +3278,111 @@ describe("TerminalView – shared tmux size", () => {
 		} finally {
 			hasFocus.mockRestore();
 		}
+	});
+});
+
+describe("TerminalView – ⌘F search target", () => {
+	async function renderTerminal(native: boolean) {
+		await act(async () => {
+			render(<I18nProvider><TerminalView ptyUrl="ws://localhost:1234" taskId="t1" projectId="p1" native={native} /></I18nProvider>);
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
+	}
+
+	async function pressSearchShortcut() {
+		const target = focusInsideTerminal();
+		await act(async () => {
+			window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyF", metaKey: true, bubbles: true }));
+		});
+		target.remove();
+	}
+
+	beforeEach(() => {
+		localStorage.clear();
+		fakeMacPlatform();
+		lastWebSocket = null;
+		searchBarProps.last = null;
+	});
+
+	afterEach(() => {
+		Object.defineProperty(globalThis, "navigator", { value: realNavigator, writable: true, configurable: true });
+	});
+
+	it("hands the ghostty terminal to the bar on a native task, before any stream frame", async () => {
+		await renderTerminal(true);
+		await pressSearchShortcut();
+		expect(searchBarProps.last?.term).toBe(mockTermInstance);
+	});
+
+	it("leaves the bar on tmux copy-mode for a tmux task", async () => {
+		await renderTerminal(false);
+		await pressSearchShortcut();
+		expect(searchBarProps.last).not.toBeNull();
+		expect(searchBarProps.last?.term).toBeUndefined();
+	});
+
+	it("gives a native terminal a long scrollback and leaves tmux on the default", async () => {
+		const { Terminal } = await import("ghostty-web");
+		vi.mocked(Terminal).mockClear();
+		await renderTerminal(true);
+		expect(vi.mocked(Terminal).mock.calls[0][0]).toMatchObject({ scrollback: 50_000_000 });
+		cleanup();
+		lastWebSocket = null;
+		vi.mocked(Terminal).mockClear();
+		await renderTerminal(false);
+		expect(vi.mocked(Terminal).mock.calls[0][0]).not.toHaveProperty("scrollback");
+	});
+
+	it("keeps the search highlight across agent writes on a mouse-tracking screen, and clears stale selections otherwise", async () => {
+		const clearSelection = vi.fn();
+		Object.assign(mockTermInstance, { clearSelection });
+		mockTermInstance.hasMouseTracking.mockReturnValue(true);
+		mockTermInstance.hasSelection.mockReturnValue(true);
+		try {
+			await renderTerminal(true);
+			await pressSearchShortcut();
+			const write = () => act(() => { lastWebSocket?.onmessage?.({ data: "spinner" } as MessageEvent); });
+			(searchBarProps.last as unknown as { onHighlightChange: (on: boolean) => void }).onHighlightChange(true);
+			clearSelection.mockClear();
+			write();
+			expect(clearSelection).not.toHaveBeenCalled();
+			(searchBarProps.last as unknown as { onHighlightChange: (on: boolean) => void }).onHighlightChange(false);
+			write();
+			expect(clearSelection).toHaveBeenCalled();
+		} finally {
+			Reflect.deleteProperty(mockTermInstance, "clearSelection");
+			mockTermInstance.hasMouseTracking.mockReturnValue(false);
+			mockTermInstance.hasSelection.mockReturnValue(false);
+		}
+	});
+
+	it("follows a recreated terminal while the bar stays open", async () => {
+		const { Terminal } = await import("ghostty-web");
+		const tree = (ptyUrl: string) => (
+			<I18nProvider><TerminalView ptyUrl={ptyUrl} taskId="t1" projectId="p1" native /></I18nProvider>
+		);
+		let view!: ReturnType<typeof render>;
+		await act(async () => {
+			view = render(tree("ws://localhost:1234"));
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await act(async () => { fireResize?.(); });
+		await waitForInitialSocket();
+		await pressSearchShortcut();
+		expect(searchBarProps.last?.term).toBe(mockTermInstance);
+
+		const replacement = { ...mockTermInstance };
+		vi.mocked(Terminal).mockImplementationOnce(function MockReplacement() { return replacement as never; });
+		await act(async () => {
+			view.rerender(tree("ws://localhost:5678"));
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await act(async () => { fireResize?.(); });
+		await waitFor(() => expect(searchBarProps.last?.term).toBe(replacement));
 	});
 });

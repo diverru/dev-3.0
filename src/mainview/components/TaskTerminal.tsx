@@ -990,6 +990,7 @@ function TaskTerminal({ projectId, taskId, tasks, projects, navigate, dispatch, 
 								if (isFocused) consumePendingFocus(handle);
 							}}
 							onNativeStatus={makePaneNativeStatusHandler(paneId)}
+							native={isNative}
 							onSessionLost={() => markPaneGone(paneId)}
 							onFocusDirection={(direction) => handleFocusDirection(paneId, direction)}
 							touchComposeMode={touchInput && !rawMode}
@@ -1024,6 +1025,7 @@ function TaskTerminal({ projectId, taskId, tasks, projects, navigate, dispatch, 
 						consumePendingFocus(handle);
 					}}
 					onNativeStatus={focusPaneId ? makePaneNativeStatusHandler(focusPaneId) : undefined}
+					native={isNative}
 					onSessionLost={focusPaneId ? () => markPaneGone(focusPaneId) : undefined}
 					onFocusDirection={focusPaneId ? (direction) => handleFocusDirection(focusPaneId, direction) : undefined}
 					touchComposeMode={touchInput && !rawMode}

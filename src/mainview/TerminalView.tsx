@@ -250,6 +250,8 @@ interface TerminalViewProps {
 	 * refused something it typed. Never fires for a tmux session.
 	 */
 	onNativeStatus?: (status: NativeViewerStatus) => void;
+	/** The task runs on the native backend (known before the first stream frame). */
+	native?: boolean;
 	/**
 	 * The app refused this socket outright (missing/unknown session). Supplying it
 	 * hands recovery to the owner, which renders one shared exited state; without
@@ -292,7 +294,13 @@ const PANE_FOCUS_SHORTCUTS: [string, SplitDirection][] = [
 /** How often to ask tmux whether the pane is still in copy-mode while we believe it is. */
 const COPY_MODE_POLL_MS = 1500;
 
-function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSessionLost, touchComposeMode, onScrolledIntoHistory, onFocusDirection }: TerminalViewProps) {
+/**
+ * ghostty-web's `scrollback` is a byte cap (default 10 KB ≈ 600 rows); tmux keeps its own
+ * history, a native pane has only this one. 50 MB ≈ 33k rows at 120 cols, allocated as output arrives.
+ */
+const NATIVE_SCROLLBACK_BYTES = 50_000_000;
+
+function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, native, onSessionLost, touchComposeMode, onScrolledIntoHistory, onFocusDirection }: TerminalViewProps) {
 	const t = useT();
 	// Rebuild budget for a dead ghostty renderer (see recoverFromRendererCrash).
 	const [terminalGeneration, setTerminalGeneration] = useState(0);
@@ -307,6 +315,10 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 	const wrapperRef = useRef<HTMLDivElement>(null);
 	const searchBarRef = useRef<TerminalSearchBarHandle | null>(null);
 	const [searchOpen, setSearchOpen] = useState(false);
+	// Native backend: the bar searches ghostty's own buffer (no tmux copy-mode).
+	const [searchTerm, setSearchTerm] = useState<Terminal | null>(null);
+	// True while the native search bar's highlight is the terminal's selection.
+	const searchOwnsSelectionRef = useRef(false);
 	// The link a touch user tapped — rendered as the Open / Copy sheet.
 	const [touchLink, setTouchLink] = useState<TouchLink | null>(null);
 	// The pane the search resolved to, and its %-rect over the terminal canvas —
@@ -797,6 +809,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 				cursorBlink: true,
 				cursorStyle: "bar",
 				theme: resolvedTheme === "light" ? LIGHT_TERMINAL_THEME : DARK_TERMINAL_THEME,
+				...(native ? { scrollback: NATIVE_SCROLLBACK_BYTES } : {}),
 			});
 
 			debugLog("terminal", "[TerminalView] Terminal created, loading FitAddon...");
@@ -819,6 +832,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 			}
 			debugLog("terminal", "[TerminalView] Terminal opened in DOM successfully");
 			termRef.current = term;
+			setSearchTerm((current) => (current ? term : current));
 			session.liveTerminals += 1;
 			countedLive = true;
 			trail.note("open", `${term.cols}x${term.rows} dpr${lastDpr}`);
@@ -1873,7 +1887,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 				// just-repainted cells when the app owns the screen
 				// (alt-screen or primary+mouse-tracking); ghostty-web
 				// won't do it on its own.
-				clearStaleSelectionOnWrite(batchTerm);
+				if (!searchOwnsSelectionRef.current) clearStaleSelectionOnWrite(batchTerm);
 				// ghostty-web never fires onRender, so the write is
 				// the "content changed" signal for the link underlines.
 				linkUnderlines?.requestRedraw();
@@ -2453,7 +2467,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 		return () => window.removeEventListener("keydown", handleKeydown, { capture: true });
 	}, [taskId]);
 
-	// ⌘F (Ctrl+Shift+F elsewhere) — search the terminal via tmux copy-mode.
+	// ⌘F (Ctrl+Shift+F elsewhere) — search the terminal (tmux copy-mode, or the ghostty buffer on native).
 	// Capture phase so ghostty can't swallow it; gated on focus being inside
 	// this terminal (or its search bar) so the browser's native find keeps
 	// working everywhere else in remote mode. The combo comes from the registry
@@ -2467,16 +2481,20 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 			if (!wrapper.contains(document.activeElement)) return;
 			e.preventDefault();
 			e.stopPropagation();
+			// A native task never falls back to tmux copy-mode: no terminal yet, no bar.
+			if (native && !termRef.current) return;
+			if (!searchBarRef.current) setSearchTerm(native ? termRef.current : null);
 			setSearchOpen(true);
 			// Already open → re-focus the input and select the query for retyping.
 			searchBarRef.current?.focusInput();
 		}
 		window.addEventListener("keydown", handleSearchShortcut, { capture: true });
 		return () => window.removeEventListener("keydown", handleSearchShortcut, { capture: true });
-	}, []);
+	}, [native]);
 
 	function closeSearch() {
 		setSearchOpen(false);
+		setSearchTerm(null);
 		setSearchPaneId(null);
 		try { termRef.current?.focus(); } catch { /* disposed */ }
 	}
@@ -2848,6 +2866,8 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, onSe
 					taskId={taskId}
 					onClose={closeSearch}
 					onPaneResolved={setSearchPaneId}
+					term={searchTerm ?? undefined}
+					onHighlightChange={(on) => { searchOwnsSelectionRef.current = on; }}
 				/>
 			)}
 		</div>

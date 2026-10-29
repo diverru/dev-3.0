@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../agent-prompt-native", () => ({ NATIVE_AGENT_PANE_ID: "pane-1" }));
 vi.mock("../native-task-panes", () => ({ nativeTaskPanesState: vi.fn() }));
+vi.mock("../native-agent-attribution", () => ({ listNativeTaskAgents: vi.fn() }));
 vi.mock("../scheduled-message-author", () => ({
 	liveAgentPaneIds: vi.fn(),
 	readPaneAgentIdentity: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("../tmux", () => ({
 	tmux: { listPanes: vi.fn(), activePaneId: vi.fn(), showOption: vi.fn() },
 }));
 
+import { listNativeTaskAgents } from "../native-agent-attribution";
 import { nativeTaskPanesState } from "../native-task-panes";
 import { liveAgentPaneIds, readPaneAgentIdentity, resolveScheduledMessageAuthorPane } from "../scheduled-message-author";
 import { findAuxPanes } from "../task-aux-panes";
@@ -55,6 +57,7 @@ beforeEach(() => {
 	vi.mocked(findAuxPanes).mockImplementation(async () => (live.includes("%3") ? [{ backend: "tmux", paneId: "%3" }] : []) as never);
 	vi.mocked(readPaneAgentIdentity).mockImplementation(async (_t, paneId) => ({ ok: true, author: author(paneId) }));
 	vi.mocked(nativeTaskPanesState).mockResolvedValue(null);
+	vi.mocked(listNativeTaskAgents).mockResolvedValue([]);
 });
 
 describe("resolveMainAgentTarget — where a task-addressed message goes", () => {
@@ -107,6 +110,34 @@ describe("resolveMainAgentTarget — where a task-addressed message goes", () =>
 		await expect(resolveMainAgentTarget(native)).resolves.toEqual({ ok: true, paneId: "pane-1", author: author("pane-1") });
 		vi.mocked(nativeTaskPanesState).mockResolvedValue({ panes: [{ paneId: "pane-1", alive: false }, { paneId: "pane-2", alive: true }] } as never);
 		await expect(resolveMainAgentTarget(native)).resolves.toMatchObject({ ok: false, detail: expect.stringContaining("pane pane-1") });
+	});
+});
+
+describe("native extra agents (sidecar panes)", () => {
+	const native = () => task(null, { terminalBackend: "native" } as Partial<Task>);
+	const extra = { paneId: "pane-2", agentCmd: "claude", agentId: null, configId: null, shellPid: 2 };
+
+	it("agentPaneRoles marks sidecar panes as agents", async () => {
+		vi.mocked(listNativeTaskAgents).mockResolvedValue([extra]);
+		expect((await agentPaneRoles(native())).get("pane-2")).toBe("agent");
+	});
+
+	it("withAgentPanes gives a sidecar pane an agent handle", async () => {
+		vi.mocked(listNativeTaskAgents).mockResolvedValue([extra]);
+		const listing = { backend: "native", screenReadable: true, screenReadableDetail: "", selfPaneId: null, runs: [],
+			panes: [{ paneId: "pane-2", index: 2, label: "", active: false, self: false, alive: true, runId: null }] } as PaneRunListing;
+		const out = await withAgentPanes(native(), listing);
+		expect(out.panes[0]).toMatchObject({ agentRole: "agent" });
+		expect(decodeAgentHandle(out.panes[0]!.agentHandle!)).toEqual(author("pane-2"));
+	});
+
+	it("the refusal names the extra agent when the main agent is gone", async () => {
+		vi.mocked(listNativeTaskAgents).mockResolvedValue([extra]);
+		vi.mocked(nativeTaskPanesState).mockResolvedValue({ panes: [{ paneId: "pane-1", alive: false }, { paneId: "pane-2", alive: true }] } as never);
+		await expect(resolveMainAgentTarget(native())).resolves.toMatchObject({
+			ok: false,
+			detail: expect.stringContaining("pane pane-2 (agent)"),
+		});
 	});
 });
 

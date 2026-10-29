@@ -371,6 +371,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	return { ...actual, mkdir: vi.fn(() => Promise.resolve(undefined)), rm: vi.fn(() => Promise.resolve(undefined)) };
 });
 
+// A real sidecar write is async I/O that the fake-timer hunter suites cannot await.
+vi.mock("../native-agent-attribution", () => ({
+	writeNativeAgentAttribution: vi.fn(async () => {}),
+	listNativeTaskAgents: vi.fn(async () => []),
+}));
+
 const mockSpawn = vi.fn();
 const mockSpawnSync = vi.fn();
 vi.mock("../spawn", () => ({
@@ -11167,6 +11173,21 @@ describe("handlers.spawnBugHuntersInTask on a native task", () => {
 
 		const sessionStateWrites = (data.updateTask as any).mock.calls.filter((c: any[]) => c[2]?.sessionState);
 		expect(sessionStateWrites).toHaveLength(0);
+	});
+
+	it("leaves an attribution sidecar next to each hunter's launch script", async () => {
+		arrangeNativeTask();
+		arrangeNativePaneSet();
+
+		await launchHunters(2);
+
+		const { writeNativeAgentAttribution } = await import("../native-agent-attribution");
+		const scripts = (mockNativePanes.splitNativeTaskPane.mock.calls as any[][]).map((call) => call[3].launch.argv.at(-1) as string);
+		expect(scripts).toHaveLength(2);
+		for (const scriptPath of scripts) {
+			expect(scriptPath).toContain("bughunt-");
+			expect(writeNativeAgentAttribution).toHaveBeenCalledWith(scriptPath, expect.objectContaining({ agentCmd: "claude" }));
+		}
 	});
 });
 

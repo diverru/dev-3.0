@@ -273,7 +273,7 @@ log.info("CLI socket server ready", { path: cliSocketPath });
 
 // ── PTY / port scanner / resource monitor (dynamic import so PATH is patched first) ──
 const { setOnPtyDied, setOnBell, setOnIdle, setOnPaneExited, setOnOsc52Copy, getActiveSessionIds, getPtyPort, registerBackpressureProbe } = await import("./pty-server");
-const { startPortScanPoller, stopPortScanPoller } = await import("./port-scanner");
+const { setNativeDevServerProbe, setNativePaneRecordsReader, startPortScanPoller, stopPortScanPoller } = await import("./port-scanner");
 const { startResourceMonitor, stopResourceMonitor } = await import("./resource-monitor");
 const { startRateLimitMonitor, stopRateLimitMonitor } = await import("./rate-limit-monitor");
 
@@ -502,6 +502,10 @@ await rehydrateTaskLifecycles();
 startMergeDetectionPoller();
 startBoardCopy();
 startPRDetectionPoller();
+
+const nativeScanReaders = await import("./native-scan-readers");
+setNativeDevServerProbe(nativeScanReaders.probeNativeDevServer);
+setNativePaneRecordsReader(nativeScanReaders.nativePaneRecordsReader);
 
 startPortScanPoller(
 	(name, payload) => {

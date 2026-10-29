@@ -388,7 +388,7 @@ log.info("CLI socket server ready", { path: cliSocketPath });
 
 // Side-effect: starts the PTY WebSocket server (dynamic import so PATH is patched first)
 const { setOnPtyDied, setOnBell, setOnIdle, setOnPaneExited, setOnOsc52Copy, getActiveSessionIds, getPtyPort, registerBackpressureProbe } = await import("./pty-server");
-const { setNativeDevServerProbe, startPortScanPoller, stopPortScanPoller } = await import("./port-scanner");
+const { setNativeDevServerProbe, setNativePaneRecordsReader, startPortScanPoller, stopPortScanPoller } = await import("./port-scanner");
 const { startResourceMonitor, stopResourceMonitor } = await import("./resource-monitor");
 const { startRateLimitMonitor, stopRateLimitMonitor } = await import("./rate-limit-monitor");
 
@@ -666,15 +666,9 @@ startPRDetectionPoller();
 // The board's dev-server read needs the native aux pane, which lives behind
 // `bun:ffi` — injected here instead of imported by the poller (see
 // `setNativeDevServerProbe`).
-setNativeDevServerProbe(async (task, socket, serverName) => {
-	const { taskTerminalBackendIdentity } = await import("./task-terminal-backend");
-	if (taskTerminalBackendIdentity(task) !== "native") return null;
-	const { auxPaneAlive, nativeAuxPaneShellPid } = await import("./task-aux-panes");
-	const { devServerScriptBase } = await import("../shared/dev-servers");
-	const slot = devServerScriptBase(serverName);
-	const alive = await auxPaneAlive(task, "devServer", socket, slot);
-	return { alive, rootPid: alive ? await nativeAuxPaneShellPid(task, "devServer", slot) : null };
-});
+const nativeScanReaders = await import("./native-scan-readers");
+setNativeDevServerProbe(nativeScanReaders.probeNativeDevServer);
+setNativePaneRecordsReader(nativeScanReaders.nativePaneRecordsReader);
 
 // Start background port scan poller (detects listening TCP ports per task)
 startPortScanPoller(

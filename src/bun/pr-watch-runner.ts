@@ -48,6 +48,11 @@ export function releaseMergeOfferHoldOnSubmission(taskId: string, submitted: str
 	}
 }
 
+/** True while a hold entry exists for the task, expired or not. */
+export function hasMergeOfferHold(taskId: string): boolean {
+	return mergeOfferHolds.has(taskId);
+}
+
 /** True while a watching agent should handle the merge before dev3 offers the user task completion. */
 export function mergeOfferHeld(task: Task, now = Date.now()): boolean {
 	const hold = mergeOfferHolds.get(task.id);

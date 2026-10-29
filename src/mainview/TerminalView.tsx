@@ -7,6 +7,7 @@ import { api, isElectrobun } from "./rpc";
 import { getTerminalKeyOverride } from "./terminal-key-overrides";
 import { pasteIntoTerminal, terminalBracketsPaste } from "./terminal-paste";
 import { inputTypesText, keyTypesText } from "./terminal-history-input";
+import { writeHoldingViewport } from "./terminal-scroll-hold";
 import { debugLog } from "./debug-log";
 import SharedSizeNotice from "./components/SharedSizeNotice";
 import {
@@ -454,22 +455,29 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 		// A history command may open a tmux search prompt that owns subsequent text.
 		else if (!tmuxHistoryKeyboardRef.current) void exitCopyModeIfNeeded(true);
 	}, [copyModePending, exitCopyModeIfNeeded]);
+	/** Input on a native pane returns to live output, like any terminal; tmux leaves history itself. */
+	const followLiveOutput = useCallback(() => {
+		if (tmuxStreamRef.current) return;
+		try { termRef.current?.scrollToBottom(); } catch { /* disposed */ }
+	}, []);
 	const sendUserInput = useCallback((data: string) => {
 		const send = () => {
 			if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data);
 		};
+		followLiveOutput();
 		prepareInputForHistory(inputTypesText(data));
 		if (copyModeExitRef.current) void copyModeExitRef.current.then(send);
 		else send();
-	}, [prepareInputForHistory]);
+	}, [followLiveOutput, prepareInputForHistory]);
 	/** A dropped path or attachment always leaves history first, like a paste. */
 	const sendPlacedInput = useCallback((data: string) => {
 		const send = () => {
 			if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data);
 		};
+		followLiveOutput();
 		if (copyModePending()) void exitCopyModeIfNeeded().then(send);
 		else send();
-	}, [copyModePending, exitCopyModeIfNeeded]);
+	}, [copyModePending, exitCopyModeIfNeeded, followLiveOutput]);
 	const mouseGestureDraggedRef = useRef(false);
 	const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">(
 		() => (document.documentElement.dataset.theme as "dark" | "light") || "dark",
@@ -718,6 +726,15 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 		// One screen reset per Terminal instance. A rebuild re-runs this effect and
 		// therefore earns a fresh one; a reconnect does not.
 		let screenResetForThisTerminal = false;
+		// A held write scrolls to the bottom and back; only its final position is news.
+		let holdingViewport = false;
+		function publishGhosttyScroll(target: Terminal) {
+			if (disposed || holdingViewport) return;
+			try {
+				if (target.viewportY > 0) setScrolledIntoHistory(true);
+				else if (!tmuxCopyModeMayBeActiveRef.current) setScrolledIntoHistory(false);
+			} catch { /* disposed */ }
+		}
 		tmuxStreamRef.current = false;
 		let fitAddon: FitAddon | null = null;
 		let ws: WebSocket | null = null;
@@ -1424,13 +1441,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 							}));
 
 							// ghostty's own scrollback (native backend / tmux without mouse mode).
-							termSubs.push(term.onScroll(() => {
-								if (disposed) return;
-								try {
-									if (term.viewportY > 0) setScrolledIntoHistory(true);
-									else if (!tmuxCopyModeMayBeActiveRef.current) setScrolledIntoHistory(false);
-								} catch { /* disposed */ }
-							}));
+							termSubs.push(term.onScroll(() => publishGhosttyScroll(term)));
 
 							// Expose terminal handle for external input (ExtraKeyBar, TerminalComposer)
 							onReady?.({
@@ -1655,6 +1666,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 						toRow,
 					);
 					if (seq && wsRef.current?.readyState === WebSocket.OPEN) {
+						followLiveOutput();
 						wsRef.current.send(seq);
 					}
 					// Swallow the alt-click even when the move is a no-op so it
@@ -1870,7 +1882,7 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 		 * Callers must concatenate anything that has to land in ONE write (a reset in
 		 * front of a replay) before calling, exactly as they did with the old batch.
 		 */
-		function writeToTerminal(data: string, fromSocket: boolean) {
+		function writeToTerminal(data: string, fromSocket: boolean, holdViewport = false) {
 			if (disposed || !batchTerm) return;
 			// OSC 8 URIs are unrecoverable from the terminal after the write, so
 			// capture them from the raw stream (replays included) before filtering.
@@ -1880,7 +1892,11 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 			if (!batch) return;
 			try {
 				const startedAt = performance.now();
-				batchTerm.write(batch);
+				if (holdViewport) {
+					holdingViewport = true;
+					try { writeHoldingViewport(batchTerm, batch); } finally { holdingViewport = false; }
+					publishGhosttyScroll(batchTerm);
+				} else batchTerm.write(batch);
 				latency.noteWrite(performance.now() - startedAt);
 				if (fromSocket) releaseSyncGate();
 				// Drop any stale selection left floating over the
@@ -1986,7 +2002,8 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 			const cleaned = payload.replace(OSC52_RE, "");
 			// RIS and the replay travel as one string so the screen is replaced in a
 			// single write — see the reset comment above.
-			if (reset || cleaned) writeToTerminal(reset + cleaned, true);
+			// A reset replaces the screen, so only a continuing stream keeps the reader in history.
+			if (reset || cleaned) writeToTerminal(reset + cleaned, true, !reset);
 		}
 
 		function noteTmuxStream() {
@@ -2143,6 +2160,8 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 						latency.noteInput(data);
 						ws.send(data);
 					};
+					// A mouse report is not typing; a terminal reply fires inside a write, which restores the view.
+					if (!data.startsWith("\x1b[<")) followLiveOutput();
 					// Only a key/paste starts cancellation; replies and mouse reports keep history.
 					if (copyModeExitRef.current) void copyModeExitRef.current.then(send);
 					else send();

@@ -527,3 +527,120 @@ describe("resolveScheduledMessageAuthorPane on Windows", () => {
 		});
 	});
 });
+
+describe("a native main agent that restarts keeps its scheduled messages", () => {
+	const nativeMain = (conversation = "conv-a") => task([pane(null, conversation)], { terminalBackend: "native" } as Partial<Task>);
+	const rootAt = (shellPid: number) =>
+		vi.mocked(nativeTaskPanesState).mockResolvedValue({
+			taskId: "task-1", layout: "", activePaneId: "pane-1",
+			panes: [
+				{ paneId: "pane-1", sessionId: "native-s1", hostPid: 90, shellPid, cols: 80, rows: 24, alive: true },
+				{ paneId: "pane-2", sessionId: "native-s2", hostPid: 91, shellPid: 200, cols: 80, rows: 24, alive: true },
+			],
+		});
+	/** The terminal is stopped and started again: a new root process, the same registry session id. */
+	function restartedAgent(): void {
+		procs = procs.filter((p) => ![100, 101, 102, 103].includes(p.pid));
+		procs.push(
+			{ pid: 150, ppid: 50, args: "/opt/homebrew/bin/zsh /tmp/dev3-task-cmd.sh" },
+			{ pid: 151, ppid: 150, args: "/Users/me/.local/bin/claude --resume conv-a" },
+		);
+		rootAt(150);
+	}
+	const authorOf = async () => (await captureScheduledMessageAuthor(nativeMain(), "pane-1", 103))!;
+	beforeEach(() => rootAt(100));
+
+	it("records the conversation and the root process generation of the main agent", async () => {
+		expect(await authorOf()).toEqual({
+			paneId: "pane-1", sessionId: "conv-a", paneToken: "native-s1", agentProcess: sig(101), paneGeneration: sig(100),
+		});
+	});
+
+	it("delivers to the resumed agent of the same conversation", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toEqual({ ok: true, paneId: "pane-1" });
+	});
+
+	it("still lands in pane-1 while the original agent runs", async () => {
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), await authorOf())).toEqual({ ok: true, paneId: "pane-1" });
+	});
+
+	it("drops it once the agent exited into its shell, even with a program running there", async () => {
+		const author = await authorOf();
+		agentExits(100);
+		procs.push({ pid: 170, ppid: 100, args: "bun test" });
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
+	});
+
+	it("drops it when the resumed agent exited too and a program runs in the shell it left", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		agentExits(150);
+		procs.push({ pid: 170, ppid: 150, args: "bun run dev" });
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
+	});
+
+	it("drops it for a task woken as a plain shell: the parked entry is not the agent", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		const parked = task([{ ...pane(null, "conv-a"), parked: true }], { terminalBackend: "native" } as Partial<Task>);
+		expect(await resolveScheduledMessageAuthorPane(parked, author)).toMatchObject({ ok: false });
+	});
+
+	it("drops it when only the signature text differs, not the root process", async () => {
+		const author = await authorOf();
+		procs = procs.filter((p) => ![101, 102, 103].includes(p.pid));
+		procs.push({ pid: 111, ppid: 100, args: "/Users/me/.local/bin/claude --resume conv-a", start: "Mon Oct  5 11:00:00 2026" });
+		vi.mocked(readAgentProcessSignature).mockImplementation(async (pid) => (pid === 100 ? "100@Mon Oct 5 08:00:00 2026" : sig(pid)));
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
+	});
+
+	it("reads the generation only where it is stored or compared", async () => {
+		const sender = await captureSenderAgent(nativeMain(), "pane-1", 103);
+		expect(sender.ok && sender.author).not.toHaveProperty("paneGeneration");
+		const listed = await readPaneAgentIdentity(nativeMain(), "pane-1");
+		expect(listed.ok && listed.author).not.toHaveProperty("paneGeneration");
+		const held = await readPaneAgentIdentity(nativeMain(), "pane-1", { generation: true });
+		expect(held.ok && held.author).toHaveProperty("paneGeneration", sig(100));
+	});
+
+	it("drops it after Start Fresh: another conversation runs in pane-1", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		expect(await resolveScheduledMessageAuthorPane(nativeMain("conv-b"), author)).toMatchObject({ ok: false });
+	});
+
+	it("drops a record written before the generation existed", async () => {
+		const { paneGeneration: _unused, ...legacy } = await authorOf();
+		restartedAgent();
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), legacy)).toMatchObject({ ok: false });
+	});
+
+	it("drops it when the restarted pane runs no agent yet", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		procs = procs.filter((p) => p.pid !== 151);
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
+	});
+
+	it("never rebinds an extra pane", async () => {
+		const extra = (await captureScheduledMessageAuthor(nativeMain(), "pane-2", 203))!;
+		expect(extra).not.toHaveProperty("paneGeneration");
+		procs = procs.filter((p) => ![200, 201, 202, 203].includes(p.pid));
+		procs.push({ pid: 250, ppid: 50, args: "/opt/homebrew/bin/zsh /tmp/dev3-task-cmd.sh" }, { pid: 251, ppid: 250, args: "claude" });
+		expect(await resolveScheduledMessageAuthorPane(nativeMain(), extra)).toMatchObject({ ok: false });
+	});
+
+	it("is unsupported on Windows, before any probe", async () => {
+		const author = await authorOf();
+		restartedAgent();
+		const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+		try {
+			expect(await resolveScheduledMessageAuthorPane(nativeMain(), author)).toMatchObject({ ok: false });
+		} finally {
+			Object.defineProperty(process, "platform", realPlatform);
+		}
+	});
+});

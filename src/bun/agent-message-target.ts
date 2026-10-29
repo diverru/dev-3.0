@@ -107,7 +107,7 @@ export async function resolveMainAgentTarget(task: Task): Promise<HeldMessageTar
 	if (!paneId || !live.includes(paneId)) {
 		return refusal(task, `the task's main agent${paneId ? ` (pane ${paneId})` : ""} is not running`, paneId, live);
 	}
-	const identity = await readPaneAgentIdentity(task, paneId);
+	const identity = await readPaneAgentIdentity(task, paneId, { generation: true });
 	if (identity.ok) return { ok: true, paneId, author: identity.author };
 	if (identity.reason === "no-agent") return refusal(task, `the task's main agent has exited (${identity.detail})`, paneId, live);
 	// Windows, or a probe that failed: the pane is still the main agent's, only unverified.

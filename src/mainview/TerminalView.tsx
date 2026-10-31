@@ -2636,9 +2636,9 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 		const container = containerRef.current;
 		if (!container) return;
 
-		function sendPathToPty(path: string) {
+		function sendPathToPty(...paths: string[]) {
 			if (wsRef.current?.readyState === WebSocket.OPEN) {
-				const escaped = path.replace(/ /g, "\\ ");
+				const escaped = paths.map((path) => path.replace(/ /g, "\\ ")).join(" ");
 				sendPlacedInput(escaped);
 			}
 			try { termRef.current?.focus(); } catch { /* disposed */ }
@@ -2654,20 +2654,23 @@ function TerminalView({ ptyUrl, taskId, projectId, onReady, onNativeStatus, nati
 				// over real PNG bytes for a clipboard bitmap. The host-clipboard RPC below
 				// is the fallback — on Windows it returns raw DIB bytes, and in remote mode
 				// it reads the app host's clipboard rather than the user's device.
-				const pastedImages = imageFilesFromClipboard(clip);
-				if (pastedImages.length > 0) {
+				// Files copied in Finder come without text and are uploaded like a drop.
+				const pastedFiles = !text && clip?.files?.length ? Array.from(clip.files) : imageFilesFromClipboard(clip);
+				if (pastedFiles.length > 0) {
 					e.preventDefault();
 					e.stopImmediatePropagation();
-					void Promise.all(pastedImages.map((f) => uploadDroppedFile(projectId, f)))
-						.then((paths) => {
-							const line = paths.filter((p): p is string => Boolean(p)).map((p) => p.replace(/ /g, "\\ ")).join(" ");
-							if (line) sendPathToPty(line);
-							else toast.error(t("imagePaste.failed"), { taskId });
-						})
-						.catch((err) => {
-							console.error("[TerminalView] Image paste upload failed:", err);
-							toast.error(t("fileDrop.uploadFailed", { error: String(err instanceof Error ? err.message : err) }), { taskId });
-						});
+					let failed = false;
+					// Per file, like a drop: a copied folder cannot be read, but the files beside it still land.
+					void Promise.all(pastedFiles.map((f) => uploadDroppedFile(projectId, f).catch((err) => {
+						failed = true;
+						console.error(`[TerminalView] Paste upload failed for "${f.name}":`, err);
+						toast.error(t("fileDrop.uploadFailed", { error: String(err instanceof Error ? err.message : err) }), { taskId });
+						return null;
+					}))).then((paths) => {
+						const uploaded = paths.filter((p): p is string => Boolean(p));
+						if (uploaded.length > 0) sendPathToPty(...uploaded);
+						else if (!failed && pastedFiles.every((f) => f.type.startsWith("image/"))) toast.error(t("imagePaste.failed"), { taskId });
+					});
 					return;
 				}
 

@@ -1866,6 +1866,47 @@ describe("TerminalView – paste routing", () => {
 		expect(mockedUploadFileBase64).not.toHaveBeenCalled();
 	});
 
+	it("uploads a non-image file copied in Finder and types its path, like a drop", async () => {
+		// WKWebView hands a Finder file copy over as a File and hides the filename text.
+		mockedUploadFileBase64.mockImplementation(async ({ filename }) => ({ path: `/tmp/uploads/${filename}` }) as any);
+		const { container } = await renderAndSetup();
+		const terminal = container.querySelector('[data-terminal="true"]')!;
+		const pdf = new File(["%PDF-1.4"], "my report.pdf", { type: "application/pdf" });
+		const png = new File([new Uint8Array([0x89, 0x50])], "photo.png", { type: "image/png" });
+
+		const { preventDefault } = dispatchPaste(terminal, "", [{ type: "application/pdf" }, { type: "image/png" }], [pdf, png]);
+
+		await waitFor(() => {
+			expect(
+				lastWebSocket?.send,
+				"cause: non-image files in a Finder paste were dropped or paths escaped twice. fix: upload all clipboard files when there is no text; escape each path once",
+			).toHaveBeenCalledWith("/tmp/uploads/my\\ report.pdf /tmp/uploads/photo.png");
+		});
+		expect(preventDefault).toHaveBeenCalled();
+		expect(mockedPasteClipboardImage).not.toHaveBeenCalled();
+		expect(mockPaste).not.toHaveBeenCalled();
+	});
+
+	it("a copied folder fails with a toast while the file copied with it still lands", async () => {
+		mockedUploadFileBase64.mockResolvedValue({ path: "/tmp/uploads/data.zip" } as any);
+		const { container } = await renderAndSetup();
+		const terminal = container.querySelector('[data-terminal="true"]')!;
+		// WKWebView gives a copied folder as an empty, untyped File whose bytes cannot be read.
+		const folder = new File([], "photos");
+		Object.defineProperty(folder, "arrayBuffer", { value: () => Promise.reject(new Error("NotReadableError")) });
+		const zip = new File(["PK"], "data.zip", { type: "application/zip" });
+
+		dispatchPaste(terminal, "", [], [folder, zip]);
+
+		await waitFor(() => {
+			expect(
+				lastWebSocket?.send,
+				"cause: one unreadable file dropped the whole paste. fix: catch upload errors per file",
+			).toHaveBeenCalledWith("/tmp/uploads/data.zip");
+		});
+		expect(toast.error).toHaveBeenCalledTimes(1);
+	});
+
 	it("still diverts large text pastes to the .txt uploader (not term.paste)", async () => {
 		mockedUploadFileBase64.mockResolvedValue({ path: "/tmp/uploads/pasted-text.txt" } as any);
 		const { container } = await renderAndSetup();

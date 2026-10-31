@@ -100,3 +100,13 @@ at `~/.dev3.0/data/<project-slug>/tasks.json`, with their copies beside them in
 
 **Restoring `model-catalog.json` does not restore its API keys** — they were never
 copied. Re-paste them in Settings once the catalog is back.
+
+## A copy of the board in the project folder
+
+Everything above lives inside `~/.dev3.0`, so it goes when that folder goes. For a
+board you want to survive a new machine or a reinstall, turn on **Keep a copy of the
+board in this project** (Project Settings > Board, or the Add Project dialog). dev3
+then keeps `.dev3/board/` in the project folder in step with the board, and adding
+that folder as a project again offers to restore the board from it. The copy holds
+no env values, accounts or agent session ids. Why it works the way it does:
+`decisions/2026/10/28/board-copy-in-the-project-folder.md`.

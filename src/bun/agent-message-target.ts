@@ -12,6 +12,7 @@ import type { ScheduledMessageAuthor, Task } from "../shared/types";
 import type { PaneRunListing } from "../shared/pane-runs";
 import { encodeAgentHandle } from "../shared/agent-handle";
 import { NATIVE_AGENT_PANE_ID } from "./agent-prompt-native";
+import { listNativeTaskAgents } from "./native-agent-attribution";
 import { nativeTaskPanesState } from "./native-task-panes";
 import { liveAgentPaneIds, readPaneAgentIdentity, resolveScheduledMessageAuthorPane } from "./scheduled-message-author";
 import { findAuxPanes } from "./task-aux-panes";
@@ -42,13 +43,14 @@ async function livePaneIds(task: Task): Promise<string[]> {
 }
 
 /**
- * Every pane dev3 launched an agent in, by role. Native `+ Agent` panes are not
- * recorded anywhere, so on native only the main pane and AI Review are known.
+ * Every pane dev3 launched an agent in, by role. Native `+ Agent` and hunter panes
+ * are not in sessionState; they are found by their launch-script sidecar.
  */
 export async function agentPaneRoles(task: Task): Promise<Map<string, AgentPaneRole>> {
 	const roles = new Map<string, AgentPaneRole>();
 	if (taskTerminalBackendIdentity(task) === "native") {
 		roles.set(NATIVE_AGENT_PANE_ID, "main");
+		for (const agent of await listNativeTaskAgents(task)) roles.set(agent.paneId, "agent");
 	} else {
 		(task.sessionState?.panes ?? []).forEach((pane, index) => {
 			if (pane.paneId && !roles.has(pane.paneId)) roles.set(pane.paneId, index === 0 ? "main" : "agent");
@@ -105,7 +107,7 @@ export async function resolveMainAgentTarget(task: Task): Promise<HeldMessageTar
 	if (!paneId || !live.includes(paneId)) {
 		return refusal(task, `the task's main agent${paneId ? ` (pane ${paneId})` : ""} is not running`, paneId, live);
 	}
-	const identity = await readPaneAgentIdentity(task, paneId);
+	const identity = await readPaneAgentIdentity(task, paneId, { generation: true });
 	if (identity.ok) return { ok: true, paneId, author: identity.author };
 	if (identity.reason === "no-agent") return refusal(task, `the task's main agent has exited (${identity.detail})`, paneId, live);
 	// Windows, or a probe that failed: the pane is still the main agent's, only unverified.

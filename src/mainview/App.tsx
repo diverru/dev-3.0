@@ -4,14 +4,14 @@ import { useAppState, canGoBack, routeTaskId, routeShowsTaskWorkspace, projectId
 import { lastProjectForSpace, rememberProjectForSpace } from "./utils/spaceBoardMemory";
 import { api, isElectrobun, getRpcConnectionState } from "./rpc";
 import { setWebNotificationsSuppressed, showWebNotificationOrToast, type WebNotificationDetail } from "./utils/webNotification";
-import { useT, useLocale } from "./i18n";
+import { useT, useLocale, type TranslationKey } from "./i18n";
 import { useStreamerMode } from "./streamer-mode";
 import { isProjectSilencedForDisplay, setSensitiveProjectIds } from "./sensitive-projects";
 import { statusKey } from "./i18n/status";
 import { columnAgentFailureCopy } from "./utils/columnAgentFailureToast";
 import { handleMenuAction } from "./menuRouter";
 import { trackPageView, trackEvent, registerAgents } from "./analytics";
-import type { AgentLaunchChoice, AgentLaunchRequest, AppRPCSchema, GlobalSettings as GlobalSettingsType, Project, RemoteAccessStatus, RemoteNetInterface, RequirementCheckResult, RosettaWarningInfo, LiveArtifact, SharedArtifact, SharedImage, Task, TaskDialogSubject, TaskStatus, UpdateChangelog } from "../shared/types";
+import type { AgentLaunchChoice, AgentLaunchRequest, AppRPCSchema, BoardCopyFailureReason, GlobalSettings as GlobalSettingsType, Project, RemoteAccessStatus, RemoteNetInterface, RequirementCheckResult, RosettaWarningInfo, LiveArtifact, SharedArtifact, SharedImage, Task, TaskDialogSubject, TaskStatus, UpdateChangelog } from "../shared/types";
 import { ACTIVE_STATUSES, orderProjectsForDisplay, getTaskTitle } from "../shared/types";
 import type { DeepLinkNav } from "../shared/deep-link";
 import { useGlobalShortcut } from "./hooks/useGlobalShortcut";
@@ -2694,6 +2694,25 @@ function App() {
 		return () => window.removeEventListener("rpc:columnAgentFailed", onColumnAgentFailed);
 	}, []);
 
+	// A board-copy write failed. The backend sends this once per failure streak.
+	useEffect(() => {
+		const keys = {
+			"missing-folder": "boardCopy.failed.missingFolder",
+			"not-writable": "boardCopy.failed.notWritable",
+			"disk-full": "boardCopy.failed.diskFull",
+			"kept-copy": "boardCopy.failed.keptCopy",
+			"unsupported-copy": "boardCopy.failed.unsupportedCopy",
+			other: "boardCopy.failed.other",
+		} as const satisfies Record<BoardCopyFailureReason, TranslationKey>;
+		function onBoardCopyFailed(e: Event) {
+			const payload = (e as CustomEvent).detail as AppRPCSchema["bun"]["messages"]["boardCopyFailed"];
+			if (isProjectSilencedForDisplay(payload.projectId)) return;
+			toast.error(t(keys[payload.reason] ?? keys.other, { name: payload.projectName }), { projectId: payload.projectId });
+		}
+		window.addEventListener("rpc:boardCopyFailed", onBoardCopyFailed);
+		return () => window.removeEventListener("rpc:boardCopyFailed", onBoardCopyFailed);
+	}, []);
+
 	// Notify user when background worktree/PTY preparation fails (e.g. empty repo,
 	// missing base branch). The task is reverted to todo on the backend; surface
 	// the real error so the user isn't left with a misleading "[session ended]".
@@ -3296,7 +3315,7 @@ function App() {
 						<div className="flex justify-end gap-2 pt-1">
 							<button
 								onClick={() => setPendingNavigation(null)}
-								className="px-4 py-2 text-sm rounded-lg text-fg-2 hover:text-fg hover:bg-elevated transition-colors"
+								className="px-4 py-2 text-sm rounded-lg text-fg-2 hover:text-fg hover:bg-overlay-hover transition-colors"
 							>
 								{t("unsavedChanges.cancel")}
 							</button>
@@ -3356,7 +3375,7 @@ function App() {
 							)}
 							<button
 								onClick={() => setShowQuitDialog(false)}
-								className="px-4 py-2 text-sm rounded-lg text-fg-2 hover:text-fg hover:bg-elevated transition-colors"
+								className="px-4 py-2 text-sm rounded-lg text-fg-2 hover:text-fg hover:bg-overlay-hover transition-colors"
 							>
 								{t("quit.cancel")}
 							</button>
@@ -3420,7 +3439,7 @@ function App() {
 							<button
 								type="button"
 								onClick={closeRemoteQR}
-								className="px-4 py-2 text-sm rounded-lg text-fg-2 hover:text-fg hover:bg-elevated transition-colors"
+								className="px-4 py-2 text-sm rounded-lg text-fg-2 hover:text-fg hover:bg-overlay-hover transition-colors"
 							>
 								{t("remote.close")}
 							</button>

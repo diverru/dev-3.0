@@ -971,14 +971,19 @@ export function getPtyPort(): number {
 	return ptyWsPort;
 }
 
-/** Returns active session info for port scanning. */
+/** Returns active session info for port scanning; native sessions carry an empty `tmuxSocket`. */
 export function getActiveSessionIds(): Array<{ taskId: string; tmuxSocket: string }> {
 	const result: Array<{ taskId: string; tmuxSocket: string }> = [];
+	const nativeTaskIds = new Set<string>();
 	for (const session of sessions.values()) {
 		if (session.proc) {
 			result.push({ taskId: session.taskId, tmuxSocket: session.tmuxSocket });
+		} else if (session.backend === "native" && session.native) {
+			nativeTaskIds.add(session.taskId);
 		}
 	}
+	// An empty socket marks a native session; extra panes share their task's id.
+	for (const taskId of nativeTaskIds) result.push({ taskId, tmuxSocket: "" });
 	return result;
 }
 

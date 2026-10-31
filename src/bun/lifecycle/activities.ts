@@ -9,6 +9,7 @@ import type {
 	TaskPRStatusCache,
 } from "../../shared/types";
 import { resolveTaskCompareBaseBranch, taskCompletesManually } from "../../shared/types";
+import { savedPrMergedFromBranch } from "../../shared/task-pull-requests";
 import * as data from "../data";
 import * as git from "../git";
 import * as github from "../github";
@@ -52,7 +53,7 @@ import {
 } from "./service";
 import { activitiesFor } from "./machine";
 import { lifecycleStateFromTask } from "./state";
-import { mergeOfferHeld, runPrWatches } from "../pr-watch-runner";
+import { hasMergeOfferHold, mergeOfferHeld, runPrWatches } from "../pr-watch-runner";
 
 // Bound PR reads so a slow GitHub connection cannot stall status updates.
 export const PR_DETECTION_TIMEOUT_MS = 15_000;
@@ -269,6 +270,7 @@ async function checkMergedBranches(): Promise<void> {
 					// once the branch has no commits of its own left (ahead === 0),
 					// otherwise post-merge work would read as merged.
 					merged = await git.isContentMergedInto(task.worktreePath!, ref, project)
+						|| (savedPrMergedFromBranch(task, branchName) && (await git.getBranchStatus(task.worktreePath!, ref)).ahead === 0)
 						|| await git.isBranchMergedViaGitHubPR(task.worktreePath!, project)
 						|| (task.prNumber != null
 							&& (await git.getBranchStatus(task.worktreePath!, ref)).ahead === 0
@@ -424,8 +426,11 @@ async function pollTaskPrStatus(project: Project, task: Task, suggestCompletion:
 	// sticky PR. After auto-merge, GitHub may delete the branch while the task
 	// still needs the exact PR fetched by number.
 	if (unpushed === -1 && task.prNumber == null) return NO_PR;
+	// A forced refresh, an active pr watch or a pending merge-offer hold keeps the full read of the saved PR.
+	const savedMerged = !force && (task.prWatches?.length ?? 0) === 0 && !hasMergeOfferHold(task.id)
+		&& savedPrMergedFromBranch(task, branchName);
 
-	const result = await github.readTaskPullRequest(project, task.worktreePath, branchName, task.prNumber, {
+	const result = await github.readTaskPullRequest(project, task.worktreePath, branchName, savedMerged ? null : task.prNumber, {
 		force, timeoutMs: PR_DETECTION_TIMEOUT_MS,
 	});
 	if (!result) return null;
@@ -471,6 +476,7 @@ export async function reportTaskPrStatus(
 		checks,
 		prTitle,
 		isDraft,
+		headRefName: typeof pr.headRefName === "string" ? pr.headRefName : null,
 	};
 	if (skipUnchanged && task.prStatusCache) {
 		const { cachedAt: _, ...saved } = task.prStatusCache;

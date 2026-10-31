@@ -244,7 +244,7 @@ export async function previewTaskHandoffHandler(params: { taskId: string; projec
 	}
 }
 
-/** The "+ Agent" panes of a native task, which sessionState.panes does not record. */
+/** The "+ Agent" and bug-hunter panes of a native task, which sessionState.panes does not record. */
 export async function getNativeTaskAgents(params: { taskId: string; projectId: string }): Promise<NativeTaskAgent[]> {
 	try {
 		const project = await data.getProject(params.projectId);

@@ -348,7 +348,7 @@ describe("saveSettings", () => {
 			remoteTunnel: { provider: "custom", command: "ngrok http {port} --log stdout", urlPattern: "https://\\S+" },
 			remotePort: 41234,
 			agentLaunchAutoApproveMinutes: 2,
-			resourceLevels: { cpuWarnPercent: 80, diskCriticalGb: 10 },
+			resourceLevels: { cpuBusyWarnPercent: 70, diskCriticalGb: 10 },
 			defaultAgentId: "builtin-codex",
 			defaultConfigId: "codex-default",
 			taskSortOrder: "newest-first",
@@ -383,6 +383,7 @@ describe("saveSettings", () => {
 			simplifiedModeSource: "existing",
 			experimentalAgentTraffic: true,
 			freezeDiagnosticsEnabled: true,
+			autoCleanupTaskHistory: false,
 			agentTrafficExperiment: "1",
 			lowBatteryEnabled: true,
 			lowBatteryDisabled: true,
@@ -401,6 +402,7 @@ describe("saveSettings", () => {
 			preventSleepWhileRunning: true,
 			skipQuitDialog: true,
 			importShellEnv: false,
+			agentEnvDefaults: { CLAUDE_CONFIG_DIR: "{home}/.claude-projects/{projectName}" },
 			focusMode: true,
 			agentRateLimitTracking: false,
 			autoAccountDefault: { claude: true },
@@ -432,6 +434,14 @@ describe("saveSettings", () => {
 		for (const key of Object.keys(full) as (keyof GlobalSettings)[]) {
 			expect(loadedSync[key], `field "${key}" was dropped by loadSettingsSync`).toEqual(full[key]);
 		}
+	});
+
+	it("drops malformed and multi-line agentEnvDefaults entries, and stores none when nothing is left", async () => {
+		writeFileSync(settingsPath, JSON.stringify({ agentEnvDefaults: { GOOD: "{projectPath}/x", "BAD-KEY": "v", NUM: 1, MULTI: "a\nb" } }));
+		expect((await loadSettings()).agentEnvDefaults).toEqual({ GOOD: "{projectPath}/x" });
+
+		writeFileSync(settingsPath, JSON.stringify({ agentEnvDefaults: { "BAD-KEY": "v" } }));
+		expect((await loadSettings()).agentEnvDefaults).toBeUndefined();
 	});
 
 	it("creates the settings directory before writing the file", async () => {

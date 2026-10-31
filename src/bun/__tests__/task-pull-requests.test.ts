@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { earlierPullRequests, recordPullRequestSighting } from "../../shared/task-pull-requests";
+import { earlierPullRequests, recordPullRequestSighting, savedPrMergedFromBranch } from "../../shared/task-pull-requests";
 import type { Task, TaskPRStatusCache } from "../../shared/types";
 
 const SEEN = "2026-09-29T10:00:00.000Z";
@@ -92,5 +92,35 @@ describe("earlierPullRequests", () => {
 
 	it("is empty for a task without a ledger", () => {
 		expect(earlierPullRequests({ prNumber: 3 })).toEqual([]);
+	});
+});
+
+describe("savedPrMergedFromBranch", () => {
+	const cache = { ...mergedCache(7, "PR"), headRefName: "feat/a" };
+	const task = (overrides: Partial<Pick<Task, "prNumber" | "prStatusCache">> = {}) => ({ prNumber: 7, prStatusCache: cache, ...overrides });
+
+	it("is true for a merged PR opened from the same branch", () => {
+		expect(savedPrMergedFromBranch(task(), "feat/a")).toBe(true);
+	});
+
+	it("is false for a cache written before the head branch was stored", () => {
+		expect(savedPrMergedFromBranch(task({ prStatusCache: { ...cache, headRefName: undefined } }), "feat/a")).toBe(false);
+	});
+
+	it("is false for another branch or no branch", () => {
+		expect(savedPrMergedFromBranch(task(), "feat/b")).toBe(false);
+		expect(savedPrMergedFromBranch(task(), "")).toBe(false);
+		expect(savedPrMergedFromBranch(task(), null)).toBe(false);
+	});
+
+	it("is false unless the saved state is MERGED", () => {
+		const closed = { ...cache, mergeState: { mergeable: "UNKNOWN", status: "UNKNOWN", state: "CLOSED" } };
+		expect(savedPrMergedFromBranch(task({ prStatusCache: closed }), "feat/a")).toBe(false);
+	});
+
+	it("is false when the cache belongs to another PR number or there is none", () => {
+		expect(savedPrMergedFromBranch(task({ prNumber: 8 }), "feat/a")).toBe(false);
+		expect(savedPrMergedFromBranch(task({ prNumber: null }), "feat/a")).toBe(false);
+		expect(savedPrMergedFromBranch(task({ prStatusCache: null }), "feat/a")).toBe(false);
 	});
 });

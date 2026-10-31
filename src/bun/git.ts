@@ -1,7 +1,8 @@
 import type { Project, Task, TaskDiffFile, TaskDiffFileStatus, TaskDiffMode, TaskDiffResponse, TaskDiffSkippedFile, TaskDiffSummary } from "../shared/types";
 export { extractRepoName } from "../shared/types";
+import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import {
 	basename as basenamePath,
 	dirname as dirnamePath,
@@ -13,6 +14,7 @@ import { CloneProgressParser } from "./clone-progress";
 import { reportCurrentPreparationStage } from "./preparation-runtime";
 import { spawn } from "./spawn";
 import { DEV3_HOME } from "./paths";
+import { listDiffSnapshots, readDiffSnapshot, writeDiffSnapshot } from "./diff-snapshots";
 import { projectStorageKey } from "../shared/project-storage-key";
 import * as github from "./github";
 
@@ -1777,25 +1779,45 @@ export interface FetchOptions {
  * `<path>.<16 random chars>` first, so that suffix has to fit too.
  */
 const SSH_SOCKET_PATH_MAX_BYTES = 103;
-const SSH_CONTROL_SOCKET_NAME_BYTES = "/".length + 40 + ".".length + 16;
+const SSH_ENDPOINT_KEY_HEX = 16;
+const SSH_CONTROL_SOCKET_NAME_BYTES = "/".length + SSH_ENDPOINT_KEY_HEX + ".".length + 16;
+
+/**
+ * `user@host:port` exactly as the remote URL spells it, with the ~/.ssh/config alias kept
+ * (`github.com-work`, not the resolved `github.com`). Null for a URL ssh does not carry.
+ */
+export function sshEndpointOf(url: string): string | null {
+	const sshUrl = /^(?:ssh|git\+ssh|ssh\+git):\/\/(?:([^@/]+)@)?(\[[^\]]+\]|[^:/]+)(?::(\d*))?\//.exec(url);
+	if (sshUrl) return `${sshUrl[1] ?? ""}@${sshUrl[2]}:${sshUrl[3] ?? ""}`;
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return null;
+	const scpLike = /^(?:([^@/:]+)@)?(\[[^\]]+\]|[^:/]+):/.exec(url);
+	return scpLike ? `${scpLike[1] ?? ""}@${scpLike[2]}:` : null;
+}
 
 /**
  * ControlMaster reuse turns a ~2.2 s fetch into ~0.75 s (the SSH handshake is most of it).
- * The ControlPath is double-quoted for ssh and single-quoted for the `sh` that runs GIT_SSH_COMMAND.
+ * The socket is keyed by the remote's own ssh endpoint, never by ssh's `%C`: `%C` hashes the
+ * resolved HostName, so two ~/.ssh/config aliases for two GitHub accounts would share one
+ * master and one identity. The ControlPath is double-quoted for ssh and single-quoted for `sh`.
  */
-export function fetchSshCommand(platform: NodeJS.Platform, controlDir: string | null): string {
+export function fetchSshCommand(platform: NodeJS.Platform, controlDir: string | null, endpoint: string | null): string {
 	const base = "ssh -o BatchMode=yes -o ConnectTimeout=10";
-	if (platform === "win32" || !controlDir) return base;
+	if (platform === "win32" || !controlDir || !endpoint) return base;
 	if (Buffer.byteLength(controlDir) + SSH_CONTROL_SOCKET_NAME_BYTES > SSH_SOCKET_PATH_MAX_BYTES) return base;
-	const controlPath = `ControlPath="${controlDir}/%C"`.replaceAll("'", `'\\''`);
+	const key = createHash("sha256").update(endpoint).digest("hex").slice(0, SSH_ENDPOINT_KEY_HEX);
+	const controlPath = `ControlPath="${controlDir}/${key}"`.replaceAll("'", `'\\''`);
 	return `${base} -o ControlMaster=auto -o '${controlPath}' -o ControlPersist=300`;
 }
 
+/**
+ * A sibling of the `ssh/` dir older versions use: their sockets are keyed by `%C`, so one
+ * of them can hold the wrong account. This version never looks there, and never deletes it.
+ */
 let sshControlDir: string | null | undefined;
 function getSshControlDir(): string | null {
 	if (sshControlDir !== undefined) return sshControlDir;
 	try {
-		const dir = `${DEV3_HOME}/ssh`;
+		const dir = `${DEV3_HOME}/ssh-mux`;
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		sshControlDir = dir;
 	} catch (err) {
@@ -1803,6 +1825,22 @@ function getSshControlDir(): string | null {
 		sshControlDir = null;
 	}
 	return sshControlDir;
+}
+
+/**
+ * The ssh command for fetching `remote`. A repo (or the user's environment) that picks
+ * its own ssh command keeps it: GIT_SSH_COMMAND would otherwise override core.sshCommand
+ * and with it the identity that repo was set up to use.
+ */
+async function fetchSshEnv(projectPath: string, remote: string): Promise<Record<string, string>> {
+	if (process.env.GIT_SSH_COMMAND || process.env.GIT_SSH) return {};
+	const [ownCommand, url] = await Promise.all([
+		run(["git", "config", "--get", "core.sshCommand"], projectPath),
+		run(["git", "ls-remote", "--get-url", remote], projectPath),
+	]);
+	if (ownCommand.ok && ownCommand.stdout.trim()) return {};
+	const endpoint = url.ok ? sshEndpointOf(url.stdout.trim()) : null;
+	return { GIT_SSH_COMMAND: fetchSshCommand(process.platform, getSshControlDir(), endpoint) };
 }
 
 function enqueueFetchJob<T>(projectPath: string, branch: string | undefined, priority: boolean, work: () => Promise<T>): Promise<T> {
@@ -1846,13 +1884,10 @@ function drainFetchQueue(projectPath: string, queue: RepoFetchQueue): void {
 	next.start();
 }
 
-async function runGitFetch(projectPath: string, cmd: string[], timeoutMs: number) {
-	return run(cmd, projectPath, {
+async function runGitFetch(projectPath: string, remote: string, args: string[], timeoutMs: number) {
+	return run(["git", "fetch", remote, ...args], projectPath, {
 		timeoutMs,
-		env: {
-			GIT_TERMINAL_PROMPT: "0",
-			GIT_SSH_COMMAND: fetchSshCommand(process.platform, getSshControlDir()),
-		},
+		env: { GIT_TERMINAL_PROMPT: "0", ...await fetchSshEnv(projectPath, remote) },
 	});
 }
 
@@ -1922,13 +1957,13 @@ async function fetchFromRemote(
 		// A non-origin remote needs an explicit refspec, otherwise `git fetch <fork>
 		// <branch>` lands in FETCH_HEAD only and refs/remotes/<fork>/<branch> —
 		// the ref every comparison resolves — stays frozen at its old commit.
-		const cmd = branch
+		const args = branch
 			? remote === "origin"
-				? ["git", "fetch", "origin", branch, "--quiet"]
-				: ["git", "fetch", remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`, "--quiet"]
-			: ["git", "fetch", remote, "--quiet"];
+				? [branch, "--quiet"]
+				: [`+refs/heads/${branch}:refs/remotes/${remote}/${branch}`, "--quiet"]
+			: ["--quiet"];
 		log.debug("Fetching remote", { projectPath, remote, branch });
-		const result = await runGitFetch(projectPath, cmd, timeoutMs);
+		const result = await runGitFetch(projectPath, remote, args, timeoutMs);
 		if (result.ok) {
 			fetchLastSuccess.set(cacheKey, Date.now());
 			fetchLastFailure.delete(cacheKey);
@@ -1998,7 +2033,7 @@ export async function fetchOriginBranches(
 		if (stillDue.length === 0) return true;
 		const startedAt = performance.now();
 		log.debug("Fetching remote", { projectPath, remote: "origin", branches: stillDue });
-		const result = await runGitFetch(projectPath, ["git", "fetch", "origin", ...stillDue, "--quiet"], timeoutMs);
+		const result = await runGitFetch(projectPath, "origin", [...stillDue, "--quiet"], timeoutMs);
 		if (result.ok) {
 			for (const b of stillDue) {
 				fetchLastSuccess.set(keyOf(b), Date.now());
@@ -3179,12 +3214,10 @@ export async function saveDiffSnapshot(
 	}
 
 	// Check if identical to the latest snapshot
-	const existing = readdirSync(dir).filter((f) => f.endsWith(".patch")).sort();
+	const existing = listDiffSnapshots(dir);
 	if (existing.length > 0) {
-		const lastFile = `${dir}/${existing[existing.length - 1]}`;
 		try {
-			const lastContent = readFileSync(lastFile, "utf-8");
-			if (lastContent === diff) {
+			if (readDiffSnapshot(`${dir}/${existing[existing.length - 1]}`) === diff) {
 				log.debug("saveDiffSnapshot: unchanged, skipping");
 				return;
 			}
@@ -3194,12 +3227,11 @@ export async function saveDiffSnapshot(
 	// Save with timestamp
 	const now = new Date();
 	const ts = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-	const filename = `${ts}.patch`;
-	writeFileSync(`${dir}/${filename}`, diff);
+	const filename = writeDiffSnapshot(dir, ts, diff);
 	log.info("saveDiffSnapshot: saved", { file: filename, size: diff.length });
 
 	// Prune old snapshots beyond the limit
-	const allFiles = readdirSync(dir).filter((f) => f.endsWith(".patch")).sort();
+	const allFiles = listDiffSnapshots(dir);
 	if (allFiles.length > MAX_DIFF_SNAPSHOTS) {
 		const toRemove = allFiles.slice(0, allFiles.length - MAX_DIFF_SNAPSHOTS);
 		for (const f of toRemove) {

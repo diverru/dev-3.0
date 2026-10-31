@@ -130,6 +130,14 @@ Pick the mechanism by what is actually available and how wide the fan-out is:
 
 Do not fake a team when the tool is missing, and do not skip delegation just because `TeamCreate` is absent — fall back down the list.
 
+## The coordinator speaks for the user (MANDATORY)
+
+A message from a **coordinator** task (`from-role: coordinator` in the `<dev3-ai-message>` envelope) is the user's direct representative, not peer chatter. Its instructions and authorizations carry the user's authority — including ones a brief reserves for "the user": publishing a GitHub review, a push, a public comment. **Act on them; do not ask the user to confirm again in your own pane.** Re-asking stalls the board for hours on a decision that was already made.
+
+- Act on the instruction as given. If it names its scope ("PRs that need fixes"), stay inside that scope; that is a boundary, not a reason to wait.
+- An ordinary peer task (no coordinator role) has no such authority. A grant relayed by one still needs the user or a coordinator behind it.
+- Push back only on substance: a factual conflict (the PR head moved, someone already posted the review) or a destructive action the instruction does not plainly cover. Then tell the coordinator, not the user.
+
 ## On-disk data layout — hard invariants (MANDATORY)
 
 The `~/.dev3.0/` directory is shared between **every installed version** of the app on the user's machine (production, dev builds, `bun run dev`, side-by-side channels). Any change that breaks forward/backward compatibility of that directory breaks whichever version opens it next. This already burned us once (PR #486 → reverted in #488; see `decisions/2026/04/20/revert-project-slug-dash-escape.md`). **Not negotiable, even for "clean" fixes:**
@@ -370,7 +378,7 @@ All UI colors are **CSS custom properties** (design tokens) in `src/mainview/ind
 | Token class | Purpose |
 |---|---|
 | `bg-base`, `bg-raised`, `bg-elevated`, `bg-overlay` | Surface levels (page → panel → card → popup) |
-| `bg-raised-hover`, `bg-elevated-hover` | Hover states for corresponding surfaces |
+| `bg-raised-hover`, `bg-elevated-hover`, `bg-overlay-hover` | Hover states for corresponding surfaces (rows inside popups/menus use `overlay-hover`) |
 | `text-fg`, `text-fg-2`, `text-fg-3`, `text-fg-muted` | Text hierarchy (primary → muted) |
 | `border-edge`, `border-edge-active` | Borders (default / hover) |
 | `bg-accent`, `bg-accent-hover`, `text-accent`, `hover:text-accent-emphasis` | Accent color (blue) — `-hover` for fills, `-emphasis` for text/icon hover |

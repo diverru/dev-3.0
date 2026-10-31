@@ -14,6 +14,15 @@ const AGENT: ScheduledMessageAuthor = {
 const roundTrip = (author: ScheduledMessageAuthor) => decodeAgentHandle(encodeAgentHandle(author));
 const bytesOf = (handle: string) => Buffer.from(handle, "base64url");
 
+describe("agent handles — a pane generation is not part of the handle", () => {
+	it("encodes the same handle with or without it, and decodes to the four stored fields", () => {
+		const native = { ...AGENT, paneId: "pane-1", paneToken: "native-s1" };
+		const withGeneration = { ...native, paneGeneration: "4100@Mon Oct 26 21:02:11 2026" };
+		expect(encodeAgentHandle(withGeneration)).toBe(encodeAgentHandle(native));
+		expect(decodeAgentHandle(encodeAgentHandle(withGeneration))).toEqual(native);
+	});
+});
+
 describe("agent handles — lossless", () => {
 	const savedTz = process.env.TZ;
 	afterEach(() => {

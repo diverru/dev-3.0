@@ -180,6 +180,12 @@ export interface GlobalSettings {
 	 */
 	telemetryDisabled?: boolean;
 	/**
+	 * Daily removal of finished tasks' diffs/logs older than 14 days
+	 * (`src/bun/worktree-cleanup-scheduler.ts`). Default on; only an explicit
+	 * false opts out.
+	 */
+	autoCleanupTaskHistory?: boolean;
+	/**
 	 * Set the first time the user opens help mode. Until then the header's `?`
 	 * rests highlighted on the main screens — help mode is the product's only
 	 * teaching channel, so a user who never finds the button never learns
@@ -233,6 +239,12 @@ export interface GlobalSettings {
 	 * vars (PATH/LANG/...) for an isolated environment.
 	 */
 	importShellEnv?: boolean;
+	/**
+	 * Env vars every agent session gets when its project does not set the key
+	 * itself (`.dev3/config.json`, `.dev3/config.local.json`, Project Settings).
+	 * Values expand `{projectPath}` and `{projectName}`. Absent ⇒ no change.
+	 */
+	agentEnvDefaults?: Record<string, string>;
 	/**
 	 * Which POSIX shell dev3 runs in its terminals and generated wrapper
 	 * scripts. Undefined ⇒ auto-detect (the user's login shell, else the first

@@ -139,6 +139,24 @@ describe("Changelog", () => {
 		expect(screen.getByRole("link", { name: "@bob" }).parentElement!.textContent).toBe("by @bob #7");
 	});
 
+	it("keeps the credits English in a non-English locale", async () => {
+		localStorage.setItem("dev3-locale", "ru");
+		try {
+			mockedApi.request.getChangelogs.mockResolvedValue([
+				{ date: "2026-02-26", type: "fix", slug: "pr", title: "Contributor", contributedBy: "carol" },
+				{ date: "2026-02-26", type: "fix", slug: "s", title: "Suggested", suggestedBy: "bob" },
+			] as ChangelogEntry[]);
+			renderChangelog();
+
+			await screen.findByText("Contributor");
+			expect(screen.getByPlaceholderText("Поиск по изменениям…")).toBeInTheDocument();
+			expect(screen.getByText("@carol").parentElement!.textContent).toBe("PR by @carol");
+			expect(screen.getByText("@bob").parentElement!.textContent).toBe("by @bob");
+		} finally {
+			localStorage.removeItem("dev3-locale");
+		}
+	});
+
 	it("does not make an entry without a body clickable", async () => {
 		const entries: ChangelogEntry[] = [
 			{ date: "2026-02-26", type: "fix", slug: "x", title: "Just a one-liner" },

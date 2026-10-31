@@ -56,7 +56,7 @@ vi.mock("../changelog-bundled", () => ({
 	get BUNDLED_CHANGELOG() { return mockBundledChangelog; },
 }));
 
-vi.mock("../pr-watch-runner", () => ({ runPrWatches: vi.fn(async () => undefined), mergeOfferHeld: vi.fn(() => false) }));
+vi.mock("../pr-watch-runner", () => ({ runPrWatches: vi.fn(async () => undefined), mergeOfferHeld: vi.fn(() => false), hasMergeOfferHold: vi.fn(() => false) }));
 
 vi.mock("../data", () => ({
 	getProject: vi.fn(),
@@ -427,7 +427,7 @@ import * as data from "../data";
 import { clearResourceMonitorBoost, isResourceMonitorBoosted } from "../resource-monitor";
 import * as git from "../git";
 import * as github from "../github";
-import { mergeOfferHeld, runPrWatches } from "../pr-watch-runner";
+import { hasMergeOfferHold, mergeOfferHeld, runPrWatches } from "../pr-watch-runner";
 import * as pty from "../pty-server";
 import { getUserShell } from "../shell-env";
 import { tmux } from "../tmux";
@@ -6091,6 +6091,34 @@ describe("handlers.getBranchStatus", () => {
 			expect(result.prNumber).toBe(1300);
 			expect(result.prState).toBe("MERGED");
 			expect(result.mergedByContent).toBe(true);
+		});
+
+		it("shows the saved merged PR of this branch without asking GitHub about it", async () => {
+			const project = makeProject();
+			const task = makeTask({
+				worktreePath: "/tmp/wt", branchName: "fix/mine", prNumber: 1300, prUrl: "https://gh/pr/1300",
+				prStatusCache: {
+					number: 1300, url: "https://gh/pr/1300", ciStatus: null, reviewState: null, unresolvedCount: 0,
+					mergeState: { mergeable: "UNKNOWN", status: "UNKNOWN", state: "MERGED" }, checks: [], prTitle: "PR", isDraft: false,
+					headRefName: "fix/mine", cachedAt: "2026-09-28T00:00:00.000Z",
+				},
+			});
+			vi.mocked(data.getProject).mockResolvedValue(project);
+			vi.mocked(data.getTask).mockResolvedValue(task);
+			mockClean();
+			vi.mocked(git.getBranchStatus).mockResolvedValue({ ahead: 0, behind: 3, baseUnreachable: false });
+			vi.mocked(github.getPullRequestSnapshot).mockClear();
+			vi.mocked(github.isPullRequestMerged).mockClear();
+			vi.mocked(github.findOpenPullRequest).mockClear();
+
+			const result = await handlers.getBranchStatus({ taskId: "task-1", projectId: "proj-1" });
+
+			expect(result.prNumber).toBe(1300);
+			expect(result.prState).toBe("MERGED");
+			expect(result.mergedByContent).toBe(true);
+			expect(github.getPullRequestSnapshot).not.toHaveBeenCalled();
+			expect(github.isPullRequestMerged).not.toHaveBeenCalled();
+			expect(github.findOpenPullRequest).toHaveBeenCalledWith(project, "/tmp/wt", "fix/mine", expect.objectContaining({ prNumber: null }));
 		});
 
 		it("keeps the stored badge when GitHub cannot answer at all (offline)", async () => {
@@ -12752,6 +12780,83 @@ describe("checkOpenPRsForPromotion", () => {
 		] }));
 	});
 
+	describe("a saved PR that is already merged", () => {
+		const mergedCache = (overrides: Record<string, unknown> = {}) => ({
+			number: 41, url: "https://github.com/test/repo/pull/41", ciStatus: null, reviewState: null, unresolvedCount: 0,
+			mergeState: { mergeable: "UNKNOWN", status: "UNKNOWN", state: "MERGED" }, checks: [], prTitle: "First PR", isDraft: false,
+			headRefName: "dev3/my-feature", cachedAt: "2026-09-28T00:00:00.000Z", ...overrides,
+		});
+		const savedPr = { prNumber: 41, prUrl: "https://github.com/test/repo/pull/41" };
+
+		it("is not read again, only the branch is searched for a new PR", async () => {
+			const { project, task } = setup({ ...savedPr, prStatusCache: mergedCache() });
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue({ isGitHub: true, checkedAt: 1, pr: null });
+			await checkOpenPRsForPromotion();
+			expect(github.readTaskPullRequest).toHaveBeenCalledWith(project, task.worktreePath, "dev3/my-feature", null, expect.anything());
+			expect(data.updateTask).not.toHaveBeenCalled();
+		});
+
+		it("still searches the branch for a new PR when origin/<branch> is missing (fork PR)", async () => {
+			const { project, task } = setup({ ...savedPr, prStatusCache: mergedCache() });
+			vi.mocked(git.getUnpushedCount).mockResolvedValue(-1);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer());
+			await checkOpenPRsForPromotion();
+			expect(github.readTaskPullRequest).toHaveBeenCalledWith(project, task.worktreePath, "dev3/my-feature", null, expect.anything());
+			expect(data.updateTask).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ prNumber: 42 }));
+		});
+
+		it("still reports a new open PR found on the branch", async () => {
+			const { project, task } = setup({ ...savedPr, prStatusCache: mergedCache() });
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer());
+			await checkOpenPRsForPromotion();
+			expect(data.updateTask).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ prNumber: 42 }));
+		});
+
+		it.each([
+			["CLOSED", { mergeState: { mergeable: "UNKNOWN", status: "UNKNOWN", state: "CLOSED" } }],
+			["OPEN", { mergeState: { mergeable: "UNKNOWN", status: "UNKNOWN", state: "OPEN" } }],
+			["cached without a head branch", { headRefName: undefined }],
+			["cached for another branch", { headRefName: "other/branch" }],
+		])("is still read by number when %s", async (_name, cache) => {
+			const { project, task } = setup({ ...savedPr, prStatusCache: mergedCache(cache) });
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ number: 41, state: "OPEN" }));
+			await checkOpenPRsForPromotion();
+			expect(github.readTaskPullRequest).toHaveBeenCalledWith(project, task.worktreePath, "dev3/my-feature", 41, expect.anything());
+		});
+
+		it("is still read by number while a pr watch is active", async () => {
+			const { project, task } = setup({
+				...savedPr, prStatusCache: mergedCache(),
+				prWatches: [{ id: "w", until: "merged", prNumber: 41, headSha: "abc", createdAt: "2026-10-22T10:00:00.000Z" }],
+			});
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ number: 41, state: "MERGED" }));
+			await checkOpenPRsForPromotion();
+			expect(github.readTaskPullRequest).toHaveBeenCalledWith(project, task.worktreePath, "dev3/my-feature", 41, expect.anything());
+		});
+
+		it("is still read by number while a merge-offer hold is pending", async () => {
+			const { project, task } = setup({ ...savedPr, prStatusCache: mergedCache() });
+			vi.mocked(hasMergeOfferHold).mockReturnValueOnce(true);
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ number: 41, state: "MERGED" }));
+			await checkOpenPRsForPromotion();
+			expect(github.readTaskPullRequest).toHaveBeenCalledWith(project, task.worktreePath, "dev3/my-feature", 41, expect.anything());
+		});
+
+		it("is still read by number on an explicit refresh", async () => {
+			const { project, task } = setup({ ...savedPr, prStatusCache: mergedCache() });
+			vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({ number: 41, state: "MERGED" }));
+			await handlers.refreshTaskPrStatus({ taskId: task.id, projectId: project.id });
+			expect(github.readTaskPullRequest).toHaveBeenCalledWith(project, task.worktreePath, "dev3/my-feature", 41, expect.objectContaining({ force: true }));
+		});
+	});
+
+	it("persists the head branch of the polled PR in the cache", async () => {
+		const { project, task } = setup();
+		vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer());
+		await checkOpenPRsForPromotion();
+		expect(data.updateTask).toHaveBeenCalledWith(project, task.id, expect.objectContaining({ prStatusCache: expect.objectContaining({ headRefName: "dev3/my-feature" }) }));
+	});
+
 	it("persists full CI and review diagnostics from the shared read", async () => {
 		const { project, task } = setup({ status: "review-by-colleague" });
 		vi.mocked(github.readTaskPullRequest).mockResolvedValue(answer({
@@ -13607,6 +13712,42 @@ describe("startMergeDetectionPoller / stopMergeDetectionPoller", () => {
 		startMergeDetectionPoller();
 		await vi.advanceTimersByTimeAsync(60_000);
 
+		expect(push).toHaveBeenCalledWith("branchMerged", expect.objectContaining({ taskId: task.id }));
+	});
+
+	it("trusts the saved merged PR of this branch without asking GitHub", async () => {
+		const project = makeProject();
+		const task = makeTask({
+			status: "review-by-user",
+			worktreePath: "/tmp/test-worktree",
+			branchName: "dev3/task-test",
+			prNumber: 1077,
+			prUrl: "https://gh/pr/1077",
+			prStatusCache: {
+				number: 1077, url: "https://gh/pr/1077", ciStatus: null, reviewState: null, unresolvedCount: 0,
+				mergeState: { mergeable: "UNKNOWN", status: "UNKNOWN", state: "MERGED" }, checks: [], prTitle: "PR", isDraft: false,
+				headRefName: "dev3/task-test", cachedAt: "2026-09-28T00:00:00.000Z",
+			},
+		});
+		const push = vi.fn();
+
+		vi.mocked(data.loadProjects).mockResolvedValue([project]);
+		vi.mocked(data.loadTasks).mockResolvedValue([task]);
+		vi.mocked(git.fetchOrigin).mockResolvedValue(true);
+		vi.mocked(git.getCurrentBranch).mockResolvedValue("dev3/task-test");
+		vi.mocked(git.getUnpushedCount).mockResolvedValue(-1);
+		vi.mocked(git.isContentMergedInto).mockResolvedValue(false);
+		vi.mocked(git.isBranchMergedViaGitHubPR).mockResolvedValue(false);
+		vi.mocked(git.getBranchStatus).mockResolvedValue({ ahead: 0, behind: 4, baseUnreachable: false });
+		vi.mocked(github.isPullRequestMerged).mockClear();
+		vi.mocked(git.isBranchMergedViaGitHubPR).mockClear();
+		setPushMessage(push);
+
+		startMergeDetectionPoller();
+		await vi.advanceTimersByTimeAsync(60_000);
+
+		expect(github.isPullRequestMerged).not.toHaveBeenCalled();
+		expect(git.isBranchMergedViaGitHubPR).not.toHaveBeenCalled();
 		expect(push).toHaveBeenCalledWith("branchMerged", expect.objectContaining({ taskId: task.id }));
 	});
 

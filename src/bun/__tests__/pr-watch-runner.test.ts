@@ -26,6 +26,7 @@ import {
 	_resetPrWatchRunnerState,
 	addPrWatch,
 	clearPrWatches,
+	hasMergeOfferHold,
 	mergeOfferHeld,
 	releaseMergeOfferHoldOnSubmission,
 	runPrWatches,
@@ -546,6 +547,18 @@ describe("the merge-completion offer hold", () => {
 	it("does not hold a task without watches", () => {
 		expect(mergeOfferHeld(task({ prWatches: null }))).toBe(false);
 		expect(mergeOfferHeld(task({ prWatches: [] }))).toBe(false);
+	});
+
+	it("keeps reporting an expired hold until mergeOfferHeld clears it", async () => {
+		vi.useFakeTimers();
+		try {
+			await runPrWatches(project, "t1", merged, URL, Date.now(), true);
+			vi.setSystemTime(Date.now() + MERGE_OFFER_WATCH_HOLD_MS + 1_000);
+
+			expect(hasMergeOfferHold("t1")).toBe(true);
+			expect(mergeOfferHeld(withoutWatches())).toBe(false);
+			expect(hasMergeOfferHold("t1")).toBe(false);
+		} finally { vi.useRealTimers(); }
 	});
 
 	it("is forgotten by the state reset", async () => {

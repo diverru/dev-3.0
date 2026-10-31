@@ -79,3 +79,16 @@ export function allPullRequests(task: Pick<Task, "prNumber" | "prUrl" | "prStatu
 		firstSeenAt: "",
 	}];
 }
+
+/** MERGED is immutable, so the saved state is proof without a network read. */
+export function savedPrMergedFromBranch(
+	task: Pick<Task, "prNumber" | "prStatusCache">,
+	branch: string | null | undefined,
+): boolean {
+	const cache = task.prStatusCache;
+	return task.prNumber != null
+		&& !!branch
+		&& cache?.number === task.prNumber
+		&& cache.mergeState?.state === "MERGED"
+		&& cache.headRefName === branch;
+}
